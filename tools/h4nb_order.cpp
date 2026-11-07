@@ -1,11 +1,12 @@
 // h4nb_order: two-body Kepler check (TZ 11.1, 11.6). It uses the fixed steps h, h/2, h/4 and h/8. It compares the error with the analytic
 // solution. It also computes the ratio e(h)/e(h/2). For a 4th-order method, the ratio is about 16.
-// Usage: h4nb_order [e=0.5] [m1=1e-3] [t_end=1] [dt_max=0.125] [level0=3] [levels=4] [devices=0]
-// t_end must be a multiple of dt_max. The orbit has a = 1, G = 1 and central mass 1. It starts at apocentre.
+// Usage: h4nb_order [e=0.5] [m1=1e-3] [t_end=1] [dt_max=0.125] [level0=3] [levels=4] [devices=0] [config=<file>] [help=1]
+// t_end must be a multiple of dt_max. dt_max must be a power of two. A settings error gives exit code 2.
+// The orbit has a = 1, G = 1 and central mass 1. It starts at apocentre.
 #include <cmath>
 #include <cstdio>
-#include "args.hpp"
 #include "h4nb/h4nb.hpp"
+#include "settings.hpp"
 
 struct Rel { double r[3], v[3]; };
 
@@ -16,8 +17,20 @@ static Rel kepler(double e, double mu, double E) {
 }
 
 int main(int argc, char** argv) try {
-  const Args a(argc, argv);
-  const double e = a.num("e", 0.5), m1 = a.num("m1", 1e-3), t_end = a.num("t_end", 1);
+  Settings a;
+  Range below_one = Range::between(0, 1);
+  below_one.hi_open = true;  // A bound orbit needs e < 1.
+  a.add("e", Setting::Real, "0.5", "Orbit eccentricity (0 <= e < 1).", below_one);
+  a.add("m1", Setting::Real, "1e-3", "Mass of the second body. The central mass is 1.", Range::gt(0));
+  a.add("t_end", Setting::Real, "1", "End time. It must be a multiple of dt_max.", Range::gt(0));
+  a.add("dt_max", Setting::Real, "0.125", "Largest step. The step of a level is dt_max / 2^level.", Range::gt(0).power_of_two());
+  a.add("level0", Setting::Int, "3", "First fixed step level.", Range::ge(0));
+  a.add("levels", Setting::Int, "4", "Number of levels. Each level halves the step.", Range::ge(2));
+  a.add("devices", Setting::IntList, "0", "CUDA device IDs.", Range::ge(0));
+  a.parse(argc, argv);
+  if (a.help()) { a.print_help(stdout, "h4nb_order"); return 0; }
+  const double e = a.real("e"), m1 = a.real("m1"), t_end = a.real("t_end");
+  if (!is_multiple(t_end, a.real("dt_max"))) a.fail("t_end", "not a multiple of dt_max");
   constexpr double kPi = 3.14159265358979323846;
   const double mu = 1 + m1;
   double M = kPi + std::sqrt(mu) * t_end, E = M;  // Start at apocentre (E = pi).
@@ -37,9 +50,9 @@ int main(int argc, char** argv) try {
 
   h4nb::Config c;
   c.mode = h4nb::StepMode::Fixed;
-  c.dt_max = a.num("dt_max", 0.125);
-  c.devices = a.ints("devices", "0");
-  const int level0 = int(a.num("level0", 3)), levels = int(a.num("levels", 4));
+  c.dt_max = a.real("dt_max");
+  c.devices = a.ints("devices");
+  const int level0 = a.integer("level0"), levels = a.integer("levels");
   std::printf("e=%g m1=%g t_end=%g\n%6s %12s %12s %8s %12s\n", e, m1, t_end, "level", "h", "pos_err", "ratio", "dE/E");
   double prev = 0;
   bool pass = levels > 1;
@@ -60,6 +73,5 @@ int main(int argc, char** argv) try {
   std::printf("order check (ratio within 16 +- 2): %s\n", pass ? "PASS" : "FAIL");
   return pass ? 0 : 3;
 } catch (const std::exception& ex) {
-  std::fprintf(stderr, "h4nb_order: %s\n", ex.what());
-  return 1;
+  return settings_main_error("h4nb_order", ex);
 }

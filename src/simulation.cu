@@ -28,10 +28,11 @@ struct IsActive {
   __device__ bool operator()(int i) const { return next[i] == T; }
 };
 
-// Split the sources (j) so that a launch has about 4 blocks per SM. This holds even when few targets are active.
+// Split the sources (j) so that a launch has about bpsm blocks per SM (Config::blocks_per_sm).
+// This holds even when few targets are active.
 struct Split { int nj, chunk; };
-Split split(int na, int ns, int sms) {
-  const int nj = std::max(1, std::min(blocks(4 * sms, blocks(na, BI)), blocks(ns, BI)));
+Split split(int na, int ns, int sms, int bpsm) {
+  const int nj = std::max(1, std::min(blocks(bpsm * sms, blocks(na, BI)), blocks(ns, BI)));
   const int chunk = blocks(blocks(ns, nj), BI) * BI;
   return {blocks(ns, chunk), chunk};
 }
@@ -49,6 +50,32 @@ struct NSum {
 
 void copy(void* dst, const void* src, size_t bytes, cudaStream_t s) {
   if (bytes) H4_CUDA(cudaMemcpyAsync(dst, src, bytes, cudaMemcpyDefault, s));
+}
+
+[[noreturn]] void bad(const std::string& msg) { throw std::invalid_argument("Config::" + msg); }
+
+// Check each Config field that does not need the CUDA runtime. Throw std::invalid_argument with the field name.
+// Do not clamp a value. The constructor checks the device ids after this function.
+void validate(const Config& c) {
+  if (!std::isfinite(c.G) || !(c.G > 0)) bad("G must be finite and > 0.");
+  if (!std::isfinite(c.eps2) || !(c.eps2 >= 0)) bad("eps2 must be finite and >= 0.");
+  if (!std::isfinite(c.eta) || !(c.eta > 0)) bad("eta must be finite and > 0.");
+  if (!std::isfinite(c.eta_init) || !(c.eta_init > 0)) bad("eta_init must be finite and > 0.");
+  int e = 0;
+  if (!std::isfinite(c.dt_max) || !(c.dt_max > 0) || std::frexp(c.dt_max, &e) != 0.5)
+    bad("dt_max must be finite, > 0 and an exact power of two (for example 1/64).");
+  if (c.max_level < 1 || c.max_level > 50) bad("max_level must be in [1, 50].");
+  if (c.mode != StepMode::Block && c.mode != StepMode::Fixed) bad("mode must be Block or Fixed.");
+  if (c.mode == StepMode::Fixed && (c.fixed_level < 0 || c.fixed_level > c.max_level))
+    bad("fixed_level must be in [0, max_level] in Fixed mode.");
+  if (!std::isfinite(c.r2_close) || !(c.r2_close >= 0)) bad("r2_close must be finite and >= 0.");
+  if (c.devices.empty()) bad("devices must not be empty.");
+  if (c.tile != 64 && c.tile != 128 && c.tile != 256) bad("tile must be 64, 128 or 256.");
+  // ponytail: the kernels use the compile-time constant BI = 128. So only tile = 128 is accepted.
+  // Upgrade: task T017 makes the kernels templates over the tile size. Then accept 64 and 256 too.
+  if (c.tile != BI)
+    bad("tile: only 128 is supported. The tile templates (task T017) do not exist yet.");
+  if (c.blocks_per_sm < 1 || c.blocks_per_sm > 16) bad("blocks_per_sm must be in [1, 16].");
 }
 
 }  // namespace
@@ -103,17 +130,18 @@ struct Simulation::Impl {
   }
 
   Impl(const Particles& p, const Config& cfg) : c(cfg), N(int(p.size())) {
+    validate(c);
     const int G = int(c.devices.size());
     const size_t n = p.size();
-    if (G < 1) throw std::invalid_argument("Config::devices must not be empty.");
     if (N < std::max(2, G)) throw std::invalid_argument("Use at least max(2, devices) particles.");
     if (p.id.size() != n || p.x.size() != n || p.y.size() != n || p.z.size() != n || p.vx.size() != n ||
         p.vy.size() != n || p.vz.size() != n)
       throw std::invalid_argument("The Particles arrays have different sizes.");
-    if (c.max_level < 0 || c.max_level > 50) throw std::invalid_argument("max_level must be in [0, 50]");
-    if (c.mode == StepMode::Fixed && (c.fixed_level < 0 || c.fixed_level > c.max_level))
-      throw std::invalid_argument("fixed_level must be in [0, max_level]");
-    if (!(c.dt_max > 0) || !(c.eta > 0) || !(c.eta_init > 0)) throw std::invalid_argument("dt_max, eta, eta_init must be > 0");
+    int count = 0;  // The device ids need the CUDA runtime. So check them after the pure checks.
+    H4_CUDA(cudaGetDeviceCount(&count));
+    for (int id : c.devices)
+      if (id < 0 || id >= count)
+        bad("devices: id " + std::to_string(id) + " is not in [0, " + std::to_string(count) + ").");
     tick = c.dt_max / std::ldexp(1.0, c.max_level);
     ids = p.id;
     d.resize(size_t(G));
@@ -135,7 +163,7 @@ struct Simulation::Impl {
       e.status = e.alloc<unsigned>(1);
       e.minr2 = e.alloc<unsigned long long>(1);
       e.tx = e.alloc<d4>(NN); e.tv = e.alloc<d4>(NN); e.tid = e.alloc<int>(NN);
-      e.pcap = NN + size_t(4) * size_t(e.sms) * BI;  // At least na * nj for every split. See split().
+      e.pcap = NN + size_t(c.blocks_per_sm) * size_t(e.sms) * BI;  // At least na * nj for every split. See split().
       e.pa = e.alloc<d4>(e.pcap); e.pj = e.alloc<d4>(e.pcap);
       e.fa = e.alloc<d4>(NN); e.fj = e.alloc<d4>(NN);
       e.ra = e.alloc<d4>(size_t(G) * nn); e.rj = e.alloc<d4>(size_t(G) * nn);
@@ -251,7 +279,7 @@ struct Simulation::Impl {
       use(e);
       for (int g = 0; g < G; ++g)
         if (g != h) H4_CUDA(cudaStreamWaitEvent(e.s, d[size_t(g)].ev_tx, 0));
-      const Split sp = split(NA, e.n, e.sms);
+      const Split sp = split(NA, e.n, e.sms, c.blocks_per_sm);
       force_kernel<<<dim3(unsigned(blocks(NA, BI)), unsigned(sp.nj)), BI, 0, e.s>>>(
           NA, e.tx, e.tv, e.tid, e.n, e.xp, e.vp, e.base, sp.chunk, c.eps2, e.pa, e.pj);
       sum_partials<<<blocks(NA, 256), 256, 0, e.s>>>(NA, sp.nj, e.pa, e.pj, e.fa, e.fj);
@@ -379,7 +407,7 @@ Diagnostics Simulation::diagnostics() {
     Impl::use(e);
     for (int g = 0; g < G; ++g)
       if (g != h) H4_CUDA(cudaStreamWaitEvent(e.s, m.d[size_t(g)].ev_tx, 0));
-    const Split sp = split(m.N, e.n, e.sms);
+    const Split sp = split(m.N, e.n, e.sms, m.c.blocks_per_sm);
     double* pp = reinterpret_cast<double*>(e.pa);  // N * nj doubles fit in pcap d4 entries.
     potential_kernel<<<dim3(unsigned(blocks(m.N, BI)), unsigned(sp.nj)), BI, 0, e.s>>>(m.N, e.tx, e.n, e.base,
                                                                                         sp.chunk, m.c.eps2, pp);

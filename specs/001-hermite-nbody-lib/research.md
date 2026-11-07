@@ -13,7 +13,7 @@ The earlier decisions D1 to D11 stay valid. This file records only the new decis
 
 ## R2. Softening is set as ε, with presets
 
-- **Decision**: the key `eps` holds ε. The tool computes `eps2 = eps * eps`. `h4nb_run` already does this (`tools/h4nb_run.cpp` line 30). The new parts are the presets and the check that `eps` and `eps2` are not both set. `preset=agn` gives ε = 0.01. `preset=stellar` gives ε = 0.0001. Default ε = 0. The library keeps `Config::eps2`, because the kernel needs ε² (one add per pair).
+- **Decision**: the key `eps` holds ε. The tool computes `eps2 = eps * eps`. `h4nb_run` already does this (`tools/h4nb_run.cpp` line 30). The new part is the presets. The tools have no `eps2` key, so a `config.used` file always repeats the run. `preset=agn` gives ε = 0.01. `preset=stellar` gives ε = 0.0001. Default ε = 0. The library keeps `Config::eps2`, because the kernel needs ε² (one add per pair).
 - **Reason**: the STE requires that the parameter is ε and not ε². Users think in ε. The kernel already applies ε² in the force (`accumulate`) and in the potential (`potential_kernel`). So the energy check uses the same softened model as the integrator. This was checked in `src/hermite.cuh` line 48 and `src/kernels.cu` line 109.
 - **Note**: the values 0.01 and 0.0001 differ by a factor of 100. They change the dynamics of close encounters. Each report states ε. Constitution I: softening is a model choice. It is not a fix for an energy error.
 

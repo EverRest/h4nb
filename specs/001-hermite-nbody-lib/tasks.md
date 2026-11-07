@@ -25,7 +25,7 @@ description: "Task list for h4nb: configuration, speed, multi-node scale and inp
 
 **Purpose**: example configurations, build targets and the constitution amendment.
 
-- [ ] T001 [P] Create `configs/agn.cfg`, `configs/stellar.cfg`, `configs/dev-4070ti.cfg` and `configs/gh200.cfg` with the keys of `contracts/run-config.md`. Set `eta=0.0005` in each (user decision, 2026-11-07). Add one comment line for each key that says why the value was chosen.
+- [x] T001 [P] Create `configs/agn.cfg`, `configs/stellar.cfg`, `configs/dev-4070ti.cfg` and `configs/gh200.cfg` with the keys of `contracts/run-config.md`. Set `eta=0.0005` in each (user decision, 2026-11-07). Add one comment line for each key that says why the value was chosen.
 - [ ] T002 [P] In `CMakeLists.txt`, confirm that no flag is x86-only, so the build works on aarch64 (GH200). Add the configure examples for `89`, `90` and `"89;90"` to the comment above `CMAKE_CUDA_ARCHITECTURES`.
 - [x] T003 Apply the constitution amendment 2.0.0 in `.specify/memory/constitution.md` with the text of `docs/multi-node-design.md` section 7. Add aarch64 to the platform line. Remove the GTX 1060 (compute capability 6.1). Done on 2026-11-07 with the user's approval.
 
@@ -37,15 +37,15 @@ description: "Task list for h4nb: configuration, speed, multi-node scale and inp
 
 **⚠️ CRITICAL**: finish this phase before the user-story phases.
 
-- [ ] T004 Create `tools/settings.hpp`: the `Setting` entry (name, type, default, range, help, value, source) and the typed getters. Types: real, int, bool, string, int list, real list, enum (data-model.md section 5).
-- [ ] T005 In `tools/settings.hpp`, add the sources and the precedence: default, `preset=`, `config=<file>`, `H4NB_<KEY>`, command line. Reject an unknown key, a bad value, a value out of range, a repeated key in one file and a nested `config=`. Exit with code 2. Name the key, the value and the source in each message (contracts/run-config.md sections 1 to 3).
-- [ ] T006 In `tools/settings.hpp`, add the presets `none`, `agn` (eps=0.01) and `stellar` (eps=0.0001) (contracts/run-config.md section 4).
-- [ ] T007 In `tools/settings.hpp`, add `write_used(path)` for `config.used` (key, value, source) and `help=1` (prints the key table).
-- [ ] T008 Add `tile` and `blocks_per_sm` to `h4nb::Config` in `include/h4nb/h4nb.hpp`, with the defaults 128 and 4 (contracts/public-api.md).
-- [ ] T009 In the `Simulation` constructor in `src/simulation.cu`, validate every `Config` field (eta > 0, dt_max a power of two, max_level 1 to 50, fixed_level range, tile in {64, 128, 256}, blocks_per_sm 1 to 16, eps2 ≥ 0, a known device list). Throw `std::invalid_argument` with the field name. Do not clamp.
-- [ ] T010 [P] In `src/io.cpp`, make `load_text` and `read_snapshot` reject a repeated ID, m ≤ 0, a non-finite value and N < 2. Name the file, the line or index, and the field (research R5).
-- [ ] T011 Move `tools/h4nb_run.cpp` to `settings.hpp`. Add the keys `n`, `central_id`, `period`, `period_kind`, `eps2`, `dissipation`, `drag_tau`, `drag_vbg`, `snap_times`, `energy_tol`, `perf`, `tile`, `blocks_per_sm`. Reject `t_end`, `diag` and snapshot times that are not multiples of `dt_max`. Write `config.used` in the output directory.
-- [ ] T012 [P] Move `tools/h4nb_mkdisk.cpp` and `tools/h4nb_order.cpp` to `settings.hpp`. Keep the current key names and defaults.
+- [x] T004 Create `tools/settings.hpp`: the `Setting` entry (name, type, default, range, help, value, source) and the typed getters. Types: real, int, bool, string, int list, real list, enum (data-model.md section 5).
+- [x] T005 In `tools/settings.hpp`, add the sources and the precedence: default, `preset=`, `config=<file>`, `H4NB_<KEY>`, command line. Reject an unknown key, a bad value, a value out of range, a repeated key in one file and a nested `config=`. Exit with code 2. Name the key, the value and the source in each message (contracts/run-config.md sections 1 to 3).
+- [x] T006 In `tools/settings.hpp`, add the presets `none`, `agn` (eps=0.01) and `stellar` (eps=0.0001) (contracts/run-config.md section 4).
+- [x] T007 In `tools/settings.hpp`, add `write_used(path)` for `config.used` (key, value, source) and `help=1` (prints the key table).
+- [x] T008 Add `tile` and `blocks_per_sm` to `h4nb::Config` in `include/h4nb/h4nb.hpp`, with the defaults 128 and 4 (contracts/public-api.md).
+- [x] T009 In the `Simulation` constructor in `src/simulation.cu`, validate every `Config` field (eta > 0, dt_max a power of two, max_level 1 to 50, fixed_level range, tile in {64, 128, 256}, blocks_per_sm 1 to 16, eps2 ≥ 0, a known device list). Throw `std::invalid_argument` with the field name. Do not clamp.
+- [x] T010 [P] In `src/io.cpp`, make `load_text` and `read_snapshot` reject a repeated ID, m ≤ 0, a non-finite value and N < 2. Name the file, the line or index, and the field (research R5).
+- [x] T011 Move `tools/h4nb_run.cpp` to `settings.hpp`. Add the keys `n`, `central_id`, `period`, `period_kind`, `dissipation`, `drag_tau`, `drag_vbg`, `snap_times`, `energy_tol`, `perf`, `tile`, `blocks_per_sm`. Reject `t_end`, `diag` and snapshot times that are not multiples of `dt_max`. Write `config.used` in the output directory.
+- [x] T012 [P] Move `tools/h4nb_mkdisk.cpp` and `tools/h4nb_order.cpp` to `settings.hpp`. Keep the current key names and defaults.
 - [ ] T013 Delete `tools/args.hpp` when no tool includes it. (Deletion needs Pavlo's permission on the device.)
 
 **Checkpoint**: every tool reads defaults, presets, files, environment and command line in the same way. Each run writes `config.used`.

@@ -29,12 +29,14 @@ struct Config {
   double eta = 0.01;          // Aarseth accuracy parameter
   double eta_init = 0.01;     // first step: dt = eta_init * |a| / |j|
   double dt_max = 1.0 / 64;   // Step of level 0. The advance_to() times must be multiples of it.
-  int max_level = 40;         // dt_min = dt_max / 2^max_level. Maximum value: 50.
+  int max_level = 40;         // dt_min = dt_max / 2^max_level. Allowed: 1 to 50.
   StepMode mode = StepMode::Block;
   int fixed_level = 0;        // Fixed mode: every particle uses dt_max / 2^fixed_level
   bool fixed_center = false;  // Particle 0 does not move. Use this only for tests and comparisons.
   double r2_close = 0.0;      // Set kClosePair when a pair has r^2 < r2_close. 0 turns this off.
   std::vector<int> devices = {0};  // CUDA device ids. A repeated id emulates more GPUs on one card.
+  int tile = 128;             // Targets per block in the force and potential kernels. Allowed: 64, 128, 256.
+  int blocks_per_sm = 4;      // Target number of blocks per SM for the source split. Allowed: 1 to 16.
 };
 
 struct Diagnostics {

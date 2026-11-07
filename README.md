@@ -111,51 +111,29 @@ Never build with `--use_fast_math` or `-ffast-math`. The NaN checks and the accu
 
 ## 5. Configuration
 
-### 5.1 ✅ Available now: command-line keys
+### 5.1 ✅ Sources and rules
 
-Each tool reads `key=value` arguments. These keys work in `h4nb_run` today:
-
-| Key | Default | Meaning |
-|---|---|---|
-| `ic` | required | Initial conditions: text `id m x y z vx vy vz`, or a `.snap` file. |
-| `out` | required | Output directory. |
-| `t_end` | required | End time. A multiple of `dt_max`. |
-| `eta` | 0.01 | Aarseth accuracy parameter. Use about 0.0005 for 1e-8. |
-| `eta_init` | 0.01 | First step: `eta_init·|a|/|j|`. |
-| `dt_max` | 0.015625 (1/64) | Largest step (level 0). |
-| `max_level` | 40 | Finest level: `dt_min = dt_max / 2^max_level`. |
-| `eps` | 0 | Plummer softening length ε. |
-| `mode` | `block` | `block` (individual steps) or `fixed` (one shared step). |
-| `fixed_level` | 0 | Level of all particles in `fixed` mode. |
-| `fixed_center` | 0 | 1: particle 0 does not move (tests only). |
-| `devices` | `0` | CUDA device list, for example `0,1`. |
-| `diag` | `dt_max` | Interval of the energy and momentum records. A multiple of `dt_max`. |
-| `snap` | 0 | Snapshot interval. A multiple of `diag`. 0: no snapshots. |
-| `r_close` | auto | Close-pair warning radius. Default `0.1·R_rms/N^(1/3)`. 0: off. |
-
-Note: today an unknown key is ignored. Check the spelling of each key. 🚧 T005 makes an unknown key an error.
-
-### 5.2 🚧 Planned: one key table, five sources (T004 to T013)
-
-Every parameter gets one key name. The same name works in a file, in the environment and on the command line. The tools read the sources in this order. A later source replaces an earlier value:
+Every parameter has one key name. The same name works in a file, in the environment and on the command line. The tools read the sources in this order. A later source replaces an earlier value:
 
 1. Default value.
-2. `preset=none|agn|stellar`.
+2. `preset=none|agn|stellar` (`h4nb_run` only).
 3. `config=<file>`: a file of `key=value` lines.
 4. Environment variables `H4NB_<KEY>`, for example `H4NB_ETA=0.0005`.
 5. Command-line `key=value`.
 
 Rules:
 
-- An unknown key, a bad value or a value out of range stops the tool with exit code 2. The message names the key, the value and the source (for example `file:run.cfg:7`).
-- `t_end`, `diag` and the snapshot times must be multiples of `dt_max`. The tool does not round them.
-- Each run writes `<out>/config.used`. It lists every key, its final value and its source. `h4nb_run config=<out>/config.used` repeats the run.
-- `<tool> help=1` prints the key table with the defaults and the ranges.
+- An unknown key in a file or on the command line, a bad value or a value out of range stops the tool with exit code 2. The message names the key, the value and the source, for example `eta=abc (file:run.cfg:7): not a number`.
+- An environment variable for a key that the tool does not use is ignored. One environment can serve several tools.
+- `t_end`, `diag`, `snap` and `snap_times` must be multiples of `dt_max`. `t_end`, `snap` and `snap_times` must also be multiples of `diag`. The tool does not round them.
+- `h4nb_run` writes `<out>/config.used`. It lists every key, its final value and its source. `h4nb_run config=<out>/config.used out=<new dir>` repeats the run. Run it from the same directory, because relative paths are not changed.
+- `<tool> help=1` prints the key table with the types, the defaults and the ranges.
+- Exit codes of `h4nb_run`: 0 = done, 1 = runtime error, 2 = settings or input error, 3 = numerical failure (NaN or Inf).
 
-Config file format (no sections, no INI, no YAML):
+Config file format (no sections, no INI, no YAML). A `#` starts a comment:
 
 ```text
-# configs/agn.cfg
+# agn.cfg
 preset=agn                    # eps=0.01
 eta=0.0005                    # measured value for 1e-8 (D11)
 dt_max=0.015625
@@ -163,16 +141,49 @@ diag=0.0625
 period=6.283185307179586      # reference period 2*pi for M=1, a=1, G=1
 ```
 
-New keys in the plan:
+### 5.2 ✅ Keys of `h4nb_run`
 
-| Group | Keys |
+| Key | Default | Meaning |
+|---|---|---|
+| `ic` | required | Initial conditions: text `id m x y z vx vy vz`, or a `.snap` file. |
+| `out` | required | Output directory. |
+| `t_end` | required | End time. |
+| `n` | 0 | Expected particle count, central body included. 0: no check. |
+| `central_id` | 0 | The ID that record 0 (the central body) must have. |
+| `period` | 0 | Reference orbital period. 0: estimate it from the initial state (needs G = 1). |
+| `period_kind` | `mean` | Estimate to use when `period=0`: `mean`, `median` or `mass_weighted`. |
+| `preset` | `none` | `none` (ε = 0), `agn` (ε = 0.01) or `stellar` (ε = 0.0001). |
+| `G` | 1 | Gravitational constant. |
+| `eps` | 0 | Plummer softening length ε. The library receives ε². |
+| `fixed_center` | 0 | 1: particle 0 does not move (tests only). |
+| `dissipation` | `off` | Only `off` now. `linear_drag` comes with T041. |
+| `mode` | `block` | `block` (individual steps) or `fixed` (one shared step). |
+| `eta` | 0.01 | Aarseth accuracy parameter. Use about 0.0005 for 1e-8. |
+| `eta_init` | 0.01 | First step: `eta_init·|a|/|j|`. |
+| `dt_max` | 0.015625 (1/64) | Largest step (level 0). A power of two. |
+| `max_level` | 40 | 1 to 50. Finest step: `dt_max / 2^max_level`. |
+| `fixed_level` | 0 | Level of all particles in `fixed` mode. Not more than `max_level`. |
+| `r_close` | −1 | Close-pair warning radius. −1: `0.1·R_rms/N^(1/3)`. 0: off. |
+| `devices` | `0` | CUDA device list, for example `0,1`. |
+| `tile` | 128 | Targets per block. Only 128 now. 64 and 256 come with T017. |
+| `blocks_per_sm` | 4 | 1 to 16. Target blocks per SM for the source split. |
+| `diag` | `dt_max` | Interval of the energy and momentum records. |
+| `snap` | 0 | Snapshot interval. 0 and no `snap_times`: only `snap_final.snap`. |
+| `snap_times` | — | Explicit snapshot times, for example `0,3.125,6.25`. Do not set it with `snap`. |
+| `energy_tol` | 1e-8 | Threshold of the energy verdict. It is printed now. T014 adds the verdict. |
+| `perf` | 1 | 0: do not write `performance.dat`. |
+
+`h4nb_mkdisk` and `h4nb_order` use the same sources and rules. Their keys did not change. `h4nb_bench` still reads plain `key=value` arguments. T019 moves it to the same system.
+
+Keys that are still planned:
+
+| Keys | Task |
 |---|---|
-| Input | `n` (expected count), `central_id`, `period`, `period_kind` (`mean`, `median`, `mass_weighted`) |
-| Physics | `preset`, `G`, `eps`, `eps2`, `dissipation` (`off`, `linear_drag`), `drag_tau`, `drag_vbg` |
-| Execution | `tile` (64, 128, 256), `blocks_per_sm` (1 to 16), `device_offset` (MPI), `mpi_host_staging` (MPI) |
-| Output | `snap_times`, `energy_tol` (verdict threshold, default 1e-8), `perf` |
-| Benchmark | `sizes`, `tiles`, `bpsm`, `fp64_peak` |
-| Study | `etas`, `dt_maxes`, `t_ends` |
+| `dissipation=linear_drag`, `drag_tau`, `drag_vbg` | T041 to T043 |
+| `tile=64` and `tile=256` | T017, T018 |
+| `device_offset`, `mpi_host_staging` (MPI) | T030, T032 |
+| `sizes`, `tiles`, `bpsm`, `fp64_peak` (`h4nb_bench`) | T019 |
+| `etas`, `dt_maxes`, `t_ends` (`h4nb_study`) | T015 |
 
 The full contract with types, defaults and ranges: [`contracts/run-config.md`](specs/001-hermite-nbody-lib/contracts/run-config.md).
 
@@ -210,7 +221,7 @@ build/h4nb_bench n=16384,131072,1024000 devices=0,1
 DT_MAX="0.015625 0.0078125" tools/eta_scan.sh disk128k.snap 6.3125 0.0625 0,1
 ```
 
-### 6.2 🚧 With a config file (T011)
+### 6.2 ✅ With a config file
 
 ```bash
 build/h4nb_run config=configs/agn.cfg ic=disk128k.snap out=run128k t_end=6.3125 devices=0,1
@@ -268,7 +279,7 @@ Rules:
 - `advance_to(t)` and `diagnostics()` work only at multiples of `dt_max`.
 - `diagnostics()` costs N²/2 pair evaluations. Call it at an interval.
 - `Simulation` is not copyable. One object owns the GPU buffers.
-- 🚧 New `Config` fields: `tile`, `blocks_per_sm` (T008), `dissipation`, `drag_tau`, `drag_vbg` (T041). The defaults give the current results bit for bit. See [`contracts/public-api.md`](specs/001-hermite-nbody-lib/contracts/public-api.md).
+- ✅ `Config::tile` (only 128 until T017) and `Config::blocks_per_sm`. The constructor checks every `Config` field and throws `std::invalid_argument` with the field name. 🚧 `dissipation`, `drag_tau`, `drag_vbg` (T041). The defaults give the current results bit for bit. See [`contracts/public-api.md`](specs/001-hermite-nbody-lib/contracts/public-api.md).
 
 ## 8. Output files
 
@@ -280,8 +291,8 @@ Rules:
 | `momentum.dat` | `time Px Py Pz Lx Ly Lz dP_rel dL_rel` (changes divided by scales from the initial state) |
 | `timesteps.dat` | `time dt_min dt_max dt_mean mean_active_per_block_step r_min` |
 | `performance.dat` | `time wall_s block_steps active pairs_per_s` |
-| `snap_NNNNNN.snap` | Binary snapshot: header + `id m x y z vx vy vz` arrays |
-| `config.used` 🚧 | Final configuration (T007) |
+| `snap_NNNNNN.snap`, `snap_final.snap` | Binary snapshot: header + `id m x y z vx vy vz` arrays |
+| `config.used` | Final configuration: key, value and source of each key |
 | `run_info.txt` 🚧 | Commit, CUDA, driver, GPUs, ranks, host (T028) |
 
 Formats: [`contracts/file-formats.md`](specs/001-hermite-nbody-lib/contracts/file-formats.md).

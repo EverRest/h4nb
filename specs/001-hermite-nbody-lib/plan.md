@@ -70,7 +70,7 @@ Full contract: [contracts/run-config.md](contracts/run-config.md).
 - **File format.** One `key=value` per line. `#` starts a comment. No sections. This keeps the user decision of 2026-11-07 (key=value format, no INI). The user confirmed the file format on 2026-11-07.
 - **Strict.** An unknown key is an error. A bad value is an error. A value out of range is an error. The message names the key and the source.
 - **Recorded.** Each run writes `config.used` to the output directory. It holds every key, its final value and its source. The file can be passed back as `config=` to repeat the run.
-- **Softening as ε.** The key `eps` is the softening length ε. The tool sets `Config::eps2 = eps * eps`. The key `eps2` stays for the library users. Both keys together are an error.
+- **Softening as ε.** The key `eps` is the softening length ε. The tool sets `Config::eps2 = eps * eps`. The tools have no `eps2` key. Library users set `Config::eps2` directly.
 - **Presets.** `preset=agn` sets `eps=0.01`. `preset=stellar` sets `eps=0.0001`. `preset=none` (default) sets `eps=0`. A preset sets only defaults. A later source can change each key.
 - **Units.** The system of units is dimensionless with G = 1. The keys `G` and `period` are configurable. `period` is the reference period for the energy verdict (default: the mean period that the tool computes; the STE reference value is 2π for M = 1, a = 1).
 - **Dissipation.** The key `dissipation` selects the model: `off` (default) or `linear_drag` (a = −(v − v_bg)/τ, with `drag_tau`). The model is a per-particle term in the corrector. It adds no pair work. Other models are added as new values of the same key (research R7).

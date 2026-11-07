@@ -2,7 +2,7 @@
 
 ## 1. Initial conditions (text)
 
-One particle on each line: `id m x y z vx vy vz`. A line that starts with `#` is a comment. Blank lines are skipped.
+One particle on each line: `id m x y z vx vy vz`. A line that starts with `#` is a comment. A `#` after the eight fields starts a comment to the end of the line. Other extra text on a line is an error. Blank lines are skipped.
 
 - The first record is the central body. It has the ID `central_id` (default 0) and its own mass, position and velocity. The program does not add a central body.
 - N counts all records, the central body included.

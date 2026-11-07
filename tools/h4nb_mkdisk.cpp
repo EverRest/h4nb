@@ -1,18 +1,25 @@
 // h4nb_mkdisk: writes a disk initial condition (TZ 11.3, 11.4). It prints period estimates (TZ 6.3).
 // Usage: h4nb_mkdisk n=<disk particles> frac=<disk mass / central mass> out=<file.txt|file.snap> [r_in=1] [r_out=10] [seed=1]
+//        [config=<file>] [help=1]
+// The keys follow contracts/run-config.md. A settings error gives exit code 2. Other errors give exit code 1.
 #include <cstdio>
-#include "args.hpp"
 #include "disk.hpp"
+#include "settings.hpp"
 
 int main(int argc, char** argv) try {
-  const Args a(argc, argv);
-  if (!a.has("n") || !a.has("frac") || !a.has("out")) {
-    std::fprintf(stderr, "usage: h4nb_mkdisk n=<count> frac=<mass ratio> out=<file.txt|file.snap>\n");
-    return 1;
-  }
-  const h4nb::Particles p = make_disk(int(a.num("n", 0)), a.num("frac", 0), a.num("r_in", 1), a.num("r_out", 10),
-                                      uint64_t(a.num("seed", 1)));
-  const std::string out = a.str("out");
+  Settings s;
+  s.add("n", Setting::Int, "", "Number of disk particles.", Range::ge(1)).required = true;
+  s.add("frac", Setting::Real, "", "Disk mass / central mass.", Range::gt(0)).required = true;
+  s.add("out", Setting::String, "", "Output file. .snap is binary. Other names are text.").required = true;
+  s.add("r_in", Setting::Real, "1", "Inner disk radius.", Range::gt(0));
+  s.add("r_out", Setting::Real, "10", "Outer disk radius. It must be larger than r_in.", Range::gt(0));
+  s.add("seed", Setting::Int, "1", "Random seed.", Range::ge(0));
+  s.parse(argc, argv);
+  if (s.help()) { s.print_help(stdout, "h4nb_mkdisk"); return 0; }
+  if (!(s.real("r_out") > s.real("r_in"))) s.fail("r_out", "must be larger than r_in");
+  const h4nb::Particles p = make_disk(s.integer("n"), s.real("frac"), s.real("r_in"), s.real("r_out"),
+                                      uint64_t(s.integer("seed")));
+  const std::string out = s.str("out");
   if (out.size() > 5 && out.compare(out.size() - 5, 5, ".snap") == 0) {
     h4nb::write_snapshot(out, p, 0.0);
   } else {
@@ -28,6 +35,5 @@ int main(int argc, char** argv) try {
   std::printf("N=%zu periods: mean=%.6g median=%.6g mass_weighted=%.6g\n", p.size(), T.mean, T.median, T.mass_weighted);
   return 0;
 } catch (const std::exception& e) {
-  std::fprintf(stderr, "h4nb_mkdisk: %s\n", e.what());
-  return 1;
+  return settings_main_error("h4nb_mkdisk", e);
 }

@@ -32,7 +32,9 @@ key = value        # spaces around '=' are allowed; a trailing comment is allowe
 - A value that does not parse is an error.
 - A value out of range is an error.
 - Each error message names the key, the value and the source (for example `file:run.cfg:7`). The tool exits with code 2.
-- `eps` and `eps2` together are an error.
+- Exit codes of `h4nb_run`: 0 = done, 1 = runtime error (for example CUDA or file I/O), 2 = settings or input error, 3 = numerical failure (NaN or Inf).
+- An environment variable for a key that the tool does not declare is ignored, because one environment serves several tools. An unknown key in a file or on the command line is an error.
+- A relative path in `config.used` is relative to the working directory of the run, not to the file.
 - `t_end`, `diag` and each snapshot time must be multiples of `dt_max`. Otherwise it is an error. The tool does not round them.
 
 ## 4. Presets
@@ -66,7 +68,6 @@ A preset sets defaults only. A file, the environment or the command line can cha
 | `preset` | enum | `none` | `none`, `agn`, `stellar` | Section 4. |
 | `G` | real | 1 | > 0 | Gravitational constant. |
 | `eps` | real | 0 | ≥ 0 | Plummer softening length ε. The library receives ε². |
-| `eps2` | real | — | ≥ 0 | ε² directly. Do not set it with `eps`. |
 | `fixed_center` | bool | 0 | 0, 1 | Particle 0 does not move. Tests and comparisons only. |
 | `dissipation` | enum | `off` | `off`, `linear_drag` | Dissipation model. With a model on, the verdict uses E − E₀ − W_diss. |
 | `drag_tau` | real | — | > 0 | `linear_drag` only. Drag time τ. Required for this model. |
@@ -99,8 +100,8 @@ A preset sets defaults only. A file, the environment or the command line can cha
 | Key | Type | Default | Range | Meaning |
 |---|---|---|---|---|
 | `diag` | real | `dt_max` | multiple of `dt_max` | Interval of the energy and momentum records. Each record costs N²/2 pairs. |
-| `snap` | real | 0 | multiple of `dt_max` | Snapshot interval. 0: only the final snapshot. |
-| `snap_times` | real list | — | multiples of `dt_max` | Explicit snapshot times. Do not set it with `snap`. |
+| `snap` | real | 0 | multiple of `diag` | Snapshot interval. 0 and no `snap_times`: only the final snapshot (`snap_final.snap`). |
+| `snap_times` | real list | — | multiples of `diag`, ≤ `t_end` | Explicit snapshot times. Do not set it with `snap` > 0. |
 | `energy_tol` | real | 1e-8 | > 0 | Threshold for the pass or fail verdict in the report. It does not change the integration. |
 | `perf` | bool | 1 | 0, 1 | Write `performance.dat`. |
 
