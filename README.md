@@ -109,6 +109,8 @@ cmake --build build -j
 
 ✅ MPI build (T029): add `-DH4NB_MPI=ON`. CMake then needs an MPI library (`find_package(MPI)`), for example `openmpi-bin` and `libopenmpi-dev`. Without this option the build has no MPI dependency, and the results are the same bits as before.
 
+✅ Spack: the repository has a Spack recipe and two Spack environments (RTX 4070 Ti, GH200 with MPI). See [`docs/spack.md`](docs/spack.md).
+
 Never build with `--use_fast_math` or `-ffast-math`. The NaN checks and the accuracy depend on IEEE arithmetic.
 
 ## 5. Configuration

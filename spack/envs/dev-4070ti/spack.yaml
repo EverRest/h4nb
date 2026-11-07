@@ -1,0 +1,21 @@
+# Spack environment for the development PC: 2x RTX 4070 Ti (compute capability 8.9), x86_64.
+# The h4nb source is this Git working tree (develop section). See docs/spack.md.
+spack:
+  repos:
+    h4nb: ../../spack_repo/h4nb
+  specs:
+  - h4nb@main +cuda cuda_arch=89 ~mpi
+  develop:
+    h4nb:
+      spec: h4nb@main
+      path: ../../..
+  packages:
+    # Use the CUDA toolkit that is on the PC. Change the version and the prefix to your installation.
+    cuda:
+      buildable: false
+      externals:
+      - spec: cuda@12.6
+        prefix: /usr/local/cuda
+  view: true
+  concretizer:
+    unify: true

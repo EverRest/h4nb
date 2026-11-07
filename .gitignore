@@ -1,4 +1,6 @@
 build/
+# Build directories of "spack develop" (docs/spack.md).
+build-*/
 *.o
 *.a
 *.snap

@@ -65,6 +65,16 @@ foreach(tool h4nb_run h4nb_mkdisk h4nb_bench h4nb_order h4nb_study)
   target_link_libraries(${tool} PRIVATE h4nb)
 endforeach()
 
+# Install rules (for "cmake --install" and for Spack, see docs/spack.md).
+# The install puts the library, the public header, the tools and the example configs into the prefix.
+include(GNUInstallDirs)
+install(TARGETS h4nb h4nb_run h4nb_mkdisk h4nb_bench h4nb_order h4nb_study
+        ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
+        LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+        RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+install(DIRECTORY include/ DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+install(DIRECTORY configs/ DESTINATION ${CMAKE_INSTALL_DATADIR}/h4nb/configs)
+
 # Tests. Label cpu: runs without a GPU. Label gpu: needs a CUDA device.
 enable_testing()
 function(h4nb_add_test name src label)

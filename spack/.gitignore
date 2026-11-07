@@ -1,0 +1,3 @@
+# Spack environment state. Each machine makes its own.
+envs/*/.spack-env/
+envs/*/spack.lock

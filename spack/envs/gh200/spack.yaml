@@ -1,0 +1,33 @@
+# Spack environment for the GH200 cluster (compute capability 9.0, aarch64), with MPI.
+# The h4nb source is this Git working tree (develop section). See docs/spack.md.
+spack:
+  repos:
+    h4nb: ../../spack_repo/h4nb
+  specs:
+  - h4nb@main +cuda cuda_arch=90 +mpi
+  develop:
+    h4nb:
+      spec: h4nb@main
+      path: ../../..
+  packages:
+    # Spack takes the CPU target of the build node (neoverse_v2 on a GH200 node).
+    # Thus run "spack install" on a GH200 node, not on an x86_64 login node.
+    # Use the CUDA toolkit and the MPI library of the cluster. Do not build them.
+    # Change the versions, the prefixes and the MPI provider to the values of your cluster
+    # ("module show cuda", "module show openmpi"). Use a CUDA-aware MPI.
+    cuda:
+      buildable: false
+      externals:
+      - spec: cuda@12.6
+        prefix: /opt/nvidia/hpc_sdk/Linux_aarch64/24.11/cuda/12.6
+    mpi:
+      require:
+      - openmpi
+    openmpi:
+      buildable: false
+      externals:
+      - spec: openmpi@4.1.7 +cuda
+        prefix: /opt/openmpi
+  view: true
+  concretizer:
+    unify: true
