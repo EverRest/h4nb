@@ -3,7 +3,16 @@
 Status: design only. No source change is made by this document.
 Audience: the developers who build the MPI path, and the reviewers of the constitution and spec changes.
 
-Sources read: `CLAUDE.md`, `docs/cuda-best-practices.md`, `specs/001-hermite-nbody-lib/spec.md` (FR-010, FR-019, FR-022), `docs/superpowers/plans/2026-11-07-h4nb.md` (D2, D3, O7), `src/simulation.cu` (current `step()`, `diagnostics()`), `tools/h4nb_run.cpp`, and TZ line 558 (CUDA-aware MPI or NCCL).
+Decisions made by the user (2026-11-07):
+
+- Configuration format: `key=value` arguments. No INI file. FR-019 and plan D1 stay unchanged.
+- Constitution version for MPI: 2.0.0 (MAJOR).
+- Diagnostics under MPI: each rank computes `N²/G` pair work for its own targets. Rank 0 adds the rank partials in rank order.
+- Library: CUDA-aware MPI. NCCL is not used.
+
+Open items that remain: section 9.2, questions 5 and 6 (cluster size, abort or clean stop).
+
+Sources read: `CLAUDE.md`, `docs/cuda-best-practices.md`, `specs/001-hermite-nbody-lib/spec.md` (FR-010, FR-019, FR-022), and `docs/superpowers/plans/2026-11-07-h4nb.md` (D2, D3, O7). Also read: `src/simulation.cu` (`step()`, `diagnostics()`), `tools/h4nb_run.cpp`, and TZ line 558.
 
 ---
 
@@ -61,7 +70,7 @@ Add no new public field in the first step. The device of each rank comes from th
 ### 2.1 Rules
 
 1. Every sum in the force path uses a fixed order: rank 0, then rank 1, and so on. The library sums the received rows itself. It never uses `MPI_Reduce` or `MPI_Allreduce` with `MPI_SUM` on floating-point data in the force path. MPI does not guarantee the order of those operations.
-2. Operations that do not depend on the order are allowed: `MPI_MIN` on `Tn` and on the `minr2` bits, and `MPI_BOR` on the status bits.
+2. Order-independent operations are allowed. Use `MPI_MIN` for `Tn` and for the `minr2` bits. Use `MPI_BOR` for the status bits.
 3. The diagnostics sums use the same rule. Each rank sends its partial sum. Rank 0 adds the partials in rank order (Neumaier, see section 4).
 4. No floating-point atomics (constitution IV).
 
@@ -70,7 +79,7 @@ Add no new public field in the first step. The device of each rank comes from th
 | Case | Bit-identical? | Condition |
 |---|---|---|
 | Same build, same rank count, same device model per rank, same input | **Yes** | Required. This is FR-022 for MPI runs. |
-| Single process with `devices = {0, 1}` against `mpirun -n 2` with the same device model | **Expected, to be verified** | The same partial sums are formed in the same rank order. The force kernel launch geometry is the same. |
+| One process, `devices = {0, 1}`, against `mpirun -n 2`, same device model | **Expected; verify** | Same partial sums in the same rank order. Same kernel launch geometry. |
 | Different rank count (for example 2 against 4) | **No** | The partial sums are split at different points. The sum tree changes. |
 | Different GPU model in one run (`sms` differs, so `split()` differs) | **No** | `split()` depends on the SM count. The chunks differ. |
 | Different MPI library or different compiler flags | **No** | Not tested. Record them with the result. |
@@ -79,7 +88,7 @@ Say this in every result file. Do not claim bit-identical results across rank co
 
 ### 2.3 Tolerance for different rank counts
 
-Compare runs with different rank counts with a written tolerance. Use the same tolerance as the GPU test (1e-10 for the force path, 1e-12 for diagnostics, as approved by the user).
+Compare runs with different rank counts with a written tolerance. Use the GPU test tolerances: 1e-10 for the force path and 1e-12 for diagnostics. The user approved them.
 
 ---
 
@@ -87,17 +96,21 @@ Compare runs with different rank counts with a written tolerance. Use the same t
 
 ### 3.1 Settings
 
-The spec (FR-019) forbids INI files and requires `key=value` arguments. The plan (D1) says the library reads no configuration file. **This design does not add INI keys.** Section 8 lists the conflict. The user must decide.
+Every parameter can be set in three places. The tools read them in this order. Later sources win.
 
-The MPI settings are these:
+1. **Defaults** in the `Config` struct.
+2. **Config file**, option `config=<path>`. One key per line, written as `key=value`. There are no sections. Blank lines and lines that start with `#` are skipped. A file parser of about 30 lines lives in `tools/`. The library (`Config`) has no parser.
+3. **Environment**, variable `H4NB_<KEY>` for each key, in upper case. Examples: `H4NB_ETA`, `H4NB_DEVICE_OFFSET`.
+4. **CLI**, arguments `key=value` for each key.
 
-| Setting | Where | Meaning |
-|---|---|---|
-| `devices=` | tool argument (`h4nb_run`) | Ignored under MPI. The local rank selects the device. |
-| `ranks_per_node=` | not needed | Set by the launcher, not by the program. |
-| `H4NB_DEVICE_OFFSET` | environment, optional | Adds an offset to the local rank. Use only when the launcher cannot bind GPUs. Otherwise omit. |
+An unknown key in the file, in the environment or on the CLI is an error. Each run writes `config.used` to the output directory. This file holds the final value of every key.
 
-Do not add `H4NB_*` settings for numerics. Numerics come from the run arguments and are recorded with each result.
+The MPI keys are these:
+
+| Key | Environment variable | Default | Meaning |
+|---|---|---|---|
+| `device_offset` | `H4NB_DEVICE_OFFSET` | `0` | Added to the local rank to pick the GPU. Use only when the launcher cannot bind one GPU per task. |
+| `devices` | `H4NB_DEVICES` | `0` | Single process only. Ignored under MPI. |
 
 ### 3.2 Launch
 
@@ -113,14 +126,14 @@ mpirun -np 8 --map-by ppr:4:node --bind-to core ./h4nb_run ic=disk.snap out=run1
 srun --ntasks-per-node=4 --gpus-per-task=1 --gpu-bind=single:1 ./h4nb_run ic=disk.snap out=run1 t_end=10 eta=0.0005
 ```
 
-Use `--gpu-bind=single:1` so that each task sees one GPU. Then the device index is 0 for each task.
+Use `--gpu-bind=single:1`. Each task then sees one GPU, with device index 0.
 
 ### 3.3 Device mapping
 
-Each rank finds its local rank with `MPI_Comm_split_type(MPI_COMM_WORLD, MPI_COMM_TYPE_SHARED, ...)`. Then:
+Each rank finds its local rank with `MPI_Comm_split_type(MPI_COMM_WORLD, MPI_COMM_TYPE_SHARED, ...)`. The `device_offset` value comes from section 3.1. Then:
 
 - If the launcher exposes one GPU per task (`CUDA_VISIBLE_DEVICES` set per task, as with Slurm `--gpu-bind=single`), the rank uses device 0.
-- Otherwise the rank uses device `local_rank % cudaGetDeviceCount()`.
+- Otherwise the rank uses device `(local_rank + device_offset) % cudaGetDeviceCount()`. The default `device_offset` is 0.
 
 The library checks that `local_rank < cudaGetDeviceCount()`. If not, it throws. It does not share a device silently.
 
@@ -132,7 +145,7 @@ Do not set `CUDA_VISIBLE_DEVICES` inside the program. The launcher owns this set
 
 ### 4.1 Diagnostics (energy, momentum, angular momentum)
 
-The current code downloads all positions, computes the potential over unique pairs `j > i` (plan D6), and sums on the host.
+The current code downloads all positions. It computes the potential over unique pairs `j > i` (plan D6). It sums on the host.
 
 Under MPI, the cost of the current design is too high at large rank counts. Each rank would send `N` doubles to rank 0.
 
@@ -170,7 +183,7 @@ Every rank reads the full input file. For 1 M particles this is about 64 MB per 
 2. **Invalid numerical value (NaN or Inf).** The status word is OR-reduced across ranks at each sync point (`MPI_Allreduce`, `MPI_BOR`). The owner of the bad target sets the bit. After the reduce, every rank sees the bit. Every rank then throws the same error at the same step. No rank is left in a collective.
 3. **Too small time step (`kDtUnderflow`) and close pair (`kClosePair`).** Same as the NaN case. They are status bits.
 4. **Invalid input** (size mismatch, `N < G`, bad `max_level`). Each rank checks the same input. Each rank throws the same error. No collective has run yet, so this is safe.
-5. **Output error** (cannot write a snapshot). Rank 0 checks the write. Rank 0 calls `MPI_Abort` if the write fails, so that the other ranks do not wait.
+5. **Output error** (cannot write a snapshot). Rank 0 checks the write. Rank 0 calls `MPI_Abort` if the write fails. The other ranks then stop.
 
 ### 5.3 NaN and Inf across ranks
 
@@ -220,9 +233,9 @@ The changes below touch principle V and the Hardware and Toolchain section. They
 
 **Principle IV (Deterministic Results).** Add this sentence:
 
-> - Bit-identical results are guaranteed only for the same build, the same number of ranks and the same device list. Results for different rank counts are compared with a written tolerance.
+> - Bit-identical results are guaranteed only for the same build, rank count and device list. Compare results for different rank counts with a written tolerance.
 
-**Version.** Removing a constraint and adding a dependency changes the meaning of principle V. Under the governance rules, a change of meaning in a principle is a **MAJOR** change. The proposed version is **2.0.0**. The user decides between 2.0.0 (recommended) and 1.2.0 (if the user rules that the change is an addition only).
+**Version.** Removing a constraint and adding a dependency changes the meaning of principle V. Under the governance rules, a change of meaning in a principle is a **MAJOR** change. The proposed version is **2.0.0**. The user chose 2.0.0 on 2026-11-07.
 
 **Sync Impact Report.** List principle V, principle IV and the Hardware section as modified. Set the last amended date to the day of approval.
 
@@ -232,18 +245,25 @@ The changes below touch principle V and the Hardware and Toolchain section. They
 
 ### 8.1 spec.md (for h4nb-3a; do not edit before agreement)
 
-1. **New user story (P2), "Run on several nodes".** A researcher runs one system on GPUs across several nodes. The results agree with one node. The run time per step decreases with more nodes. Independent test: the same input on 2 GPUs of one node and on 2 nodes, with the comparison of section 2.3.
+1. **New user story (P2), "Run on several nodes".** A researcher runs one system on GPUs across several nodes. The results agree with one node. The run time per step decreases with more nodes. Independent test: run the same input on 2 GPUs of one node and on 2 nodes. Compare the results with section 2.3.
 2. **FR-010, extend.** Add: "The GPUs may be on one or several nodes. Each GPU is one MPI rank. The exchange of the active targets and of the partial forces uses MPI. The owner adds the partial forces in rank order."
 3. **FR-022, qualify.** Add: "Bit-identical results are required for the same build, rank count and device list. Runs with different rank counts are compared with the tolerance in the test plan."
-4. **FR-019, conflict.** This design adds no INI file. Do not change FR-019 without the user's decision (see section 9, question 2).
-5. **New SC (for example SC-010).** "A two-node run agrees with a one-node run of the same rank count within the stated tolerance, and the runs are measured on a cluster with the MPI stack recorded."
+4. **FR-019, no change.** Keep `key=value` arguments. The user decided this on 2026-11-07. Do not add an INI file.
+5. **New SC (for example SC-010).** "A two-node run agrees with a one-node run of the same rank count within the stated tolerance. The cluster run records the MPI stack."
 6. **Assumptions.** Replace "Multi-node work is out of scope" (if present) with the new scope.
 
 ### 8.2 plan (for h4nb-3a)
 
 1. **D3 (line 35).** Replace "It does not use MPI or NCCL" with: "It uses MPI for more than one node. NCCL is not used for the reduce-scatter (design: docs/multi-node-design.md)."
-2. **O7 (line 2071).** Move O7 into v1. Change the row to "Multi-node: MPI, CUDA-aware where available, with an ordered sum of the partial forces." Remove the gate, because the user approved multi-node for v1.
-3. **New task (after Task 5): "Task 5b: MPI path".** Steps: (a) `H4NB_MPI` CMake option and optional `find_package(MPI)`; (b) local-rank device selection; (c) collectives in `step()` and `diagnostics()`, with the rank-order sums; (d) `MPI_Abort` error path; (e) `cpu-mpi` tests of section 6.1; (f) CTest registration; (g) the cluster runs of section 6.2.
+2. **O7 (line 2071).** Move O7 into v1. Change the row to "Multi-node: MPI, CUDA-aware where available, with an ordered sum of the partial forces." Remove the gate. The user approved multi-node for v1.
+3. **New task (after Task 5): "Task 5b: MPI path".** Steps:
+   - (a) Add the `H4NB_MPI` CMake option and an optional `find_package(MPI)`.
+   - (b) Select the device by local rank.
+   - (c) Add the collectives to `step()` and `diagnostics()`, with rank-order sums.
+   - (d) Add the `MPI_Abort` error path.
+   - (e) Write the `cpu-mpi` tests of section 6.1.
+   - (f) Register them with CTest.
+   - (g) Run the cluster tests of section 6.2.
 4. **Task 6 (tools).** `h4nb_run` runs under `mpirun` with no change to its arguments.
 5. **Task 7 (acceptance).** Add one 2-node run and one 4-node run to the acceptance list.
 6. **File structure.** Add `tests/test_mpi_logic.cpp` (label `cpu-mpi`).
@@ -267,9 +287,9 @@ The changes below touch principle V and the Hardware and Toolchain section. They
 
 ### 9.2 Open questions for the user
 
-1. **MPI or NCCL?** This design recommends CUDA-aware MPI with explicit ordered sums. Which MPI stack and which cluster do you use?
-2. **Configuration format.** The spec (FR-019) and the plan (D1) forbid INI files. The request asked for INI keys. Keep `key=value` arguments only (recommended), or change FR-019 and D1?
-3. **Constitution version.** Is the change 2.0.0 (MAJOR, recommended) or 1.2.0?
-4. **Diagnostics method.** Accept the `N²/G` diagnostic work per rank (section 4.1), or keep the single-device unique-pair method with a gather of `N` doubles per rank?
+1. **Cluster MPI stack.** Decided: CUDA-aware MPI (user, 2026-11-07). Open: which MPI stack and which cluster do you use?
+2. **Configuration format.** Decided: `key=value` arguments (user, 2026-11-07). Open: a peer session reported an INI decision. Confirm which one applies.
+3. **Constitution version.** Decided: 2.0.0 (user, 2026-11-07).
+4. **Diagnostics method.** Decided: `N²/G` per rank (user, 2026-11-07).
 5. **Cluster size.** How many nodes and GPUs per node are the targets? This sets the scaling tests and the 1M-particle plan.
 6. **Abort or clean stop.** Is `MPI_Abort` on error acceptable (section 5.2 item 1)?

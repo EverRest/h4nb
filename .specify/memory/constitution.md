@@ -1,10 +1,12 @@
 <!--
 Sync Impact Report
-- Version change: 1.0.0 → 1.1.0 (MINOR: Development Workflow now requires automated tests)
-- Principles added: none
+- Version change: 1.1.0 → 2.0.0 (MAJOR: principle V allows an optional MPI dependency; the single-node limit is removed)
+- Principles modified: IV (Deterministic Results: bit-identical scope), V (Simplicity: optional MPI)
+- Sections modified: Hardware & Toolchain Constraints (several nodes, aarch64, GTX 1060 excluded, role of RTX-class GPUs)
 - Sections added: none
-- Sections modified: Development Workflow (automated test suite added; "no automated test suite" removed)
 - Removed sections: none
+- Approved by the user on 2026-11-07. Text source: docs/multi-node-design.md section 7.
+- Templates checked: plan-template.md, spec-template.md, tasks-template.md (no change needed)
 - Deferred TODOs: none
 -->
 
@@ -19,7 +21,7 @@ Sync Impact Report
 - The energy goal (max |ΔE/E₀| ≤ 1e-8 over one mean orbital period) MUST be shown by a measured run. A configuration value does not replace the measurement.
 - Softening MUST NOT be used to hide an energy error. Softening changes the physical model.
 
-Rationale: users trust the library because of its accuracy. A fast run with a wrong result has no value.
+Rationale: users trust the library because of its accuracy. A fast run with a wrong result is not useful.
 
 ### II. Speed by Measurement
 
@@ -27,7 +29,7 @@ Rationale: users trust the library because of its accuracy. A fast run with a wr
 - An optimisation that makes the code more complex MUST have a measured gate: a profiler or benchmark number shows the need. The same number MUST be recorded before and after the change.
 - Mixed precision and Tensor Cores are forbidden in v1. Only a written amendment of this constitution can permit them.
 
-Rationale: on GPUs, guesses about speed are often wrong. Numbers prevent work that has no value.
+Rationale: on GPUs, guesses about speed are often wrong. Numbers prevent work that does not add value.
 
 ### III. Library First, Small API
 
@@ -35,27 +37,29 @@ Rationale: on GPUs, guesses about speed are often wrong. Numbers prevent work th
 - The public API MUST NOT expose CUDA types.
 - A feature MUST NOT go into the public API before a user needs it.
 
-Rationale: other people's code will link to this library. A small API is easy to keep stable.
+Rationale: other people's code will link to this library. A small API is simple to keep stable.
 
 ### IV. Deterministic Results
 
 - For the same input, configuration, device list and build, a run MUST give results that are identical bit for bit.
 - Floating-point sums MUST use a fixed order. Floating-point atomics are forbidden.
 - Time MUST be stored as integer ticks.
+- Bit-identical results are guaranteed only for the same build, rank count, device list and kernel launch settings. Compare results for different rank counts with a written tolerance.
 
 Rationale: the TZ requires reproducible runs (requirement 13). Deterministic results also make it possible to find bugs.
 
 ### V. Simplicity (YAGNI)
 
-- The only dependencies are the CUDA toolkit (CUB and Thrust included) and the C++ standard library.
+- The dependencies are the CUDA toolkit (CUB and Thrust included) and the C++ standard library. The MPI library is an optional dependency. It is used only when the build sets `H4NB_MPI=ON`. No other dependency is allowed.
 - Use the shortest correct solution. A deliberate shortcut with a known limit MUST have a `ponytail:` comment that names the limit and the upgrade path.
 
-Rationale: a small codebase is easy to check against the physics.
+Rationale: a small codebase is simple to check against the physics.
 
 ## Hardware & Toolchain Constraints
 
-- Target: Linux on x86_64, NVIDIA GPUs with compute capability ≥ 7.0, CUDA ≥ 12.0, CMake ≥ 3.24, C++17.
-- v1 uses one process on one node with one or more GPUs. Multi-node work is out of scope until it is amended.
+- Target: Linux on x86_64 or aarch64, NVIDIA GPUs with compute capability ≥ 7.0, CUDA ≥ 12.0, CMake ≥ 3.24, C++17. GPUs below 7.0 (for example GTX 1060) are not supported.
+- RTX-class GPUs (low FP64 rate) are for development, correctness runs and systems up to 131 072 particles. The 1M acceptance runs use data-centre GPUs (target: GH200).
+- v1 runs as one process with one or more GPUs, or as one process per GPU. The processes may run on one node or on several nodes. Multi-node runs use MPI, with CUDA-aware MPI where the system provides it. The launcher sets the number of ranks.
 - The user's development Mac cannot build CUDA. Builds and acceptance runs happen on a CUDA machine or in CI.
 
 ## Development Workflow
@@ -72,4 +76,4 @@ Rationale: a small codebase is easy to check against the physics.
 - An amendment needs: a written change to this file, a version bump, and the user's approval.
 - Versioning: MAJOR for the removal or redefinition of a principle; MINOR for a new principle or section; PATCH for wording.
 
-**Version**: 1.1.0 | **Ratified**: 2026-11-07 | **Last Amended**: 2026-11-07
+**Version**: 2.0.0 | **Ratified**: 2026-11-07 | **Last Amended**: 2026-11-07
