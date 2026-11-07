@@ -15,8 +15,12 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <filesystem>
+#include <fstream>
+#include <functional>
+#include <iterator>
 #include <memory>
 #include <string>
 #include <vector>
@@ -165,19 +169,119 @@ static void file_error(const std::string& what) {
   g_file_error = 1;
 }
 
+// The .dat files are written to name.tmp. They get their final name after a checked close (D1). On an early exit,
+// the partial files get their final name too. Only a close error removes them. run() sets g_publish to close_all.
+static const char* const kDatNames[5] = {"energy.dat", "momentum.dat", "timesteps.dat", "performance.dat",
+                                         "energy_periods.dat"};
+static std::function<void()> g_publish;
+
+// The generic error that the constructor throws on a rank without an error of its own (src/simulation.cu).
+// The text is the same as in construct_mpi(). Such a rank does not print it. The rank with the local error prints.
+static bool remote_setup_error(const std::exception& e) {
+  return std::string(e.what()).rfind("Simulation: the setup failed on another rank", 0) == 0;
+}
+
 // Agreement of the ranks on a setup error (the settings and input checks). All ranks call it at the same point:
-// the ranks without an error from run(), a rank with an error from main(). code: 0, or the exit code of this rank.
-// It returns the largest code of all ranks. A message is printed by rank 0, or by the failed ranks when rank 0 has no
-// error. Thus a settings error that all ranks see is printed one time.
+// the ranks without an error from run(), a rank with an error from main() or from run(). code: 0, or the exit code of
+// this rank. It returns the largest code of all ranks. A local error is printed by rank 0, or by the failed ranks when
+// rank 0 has no local error. Thus a settings error that all ranks see is printed one time.
 static int agree_setup(int code, const std::exception* e) {
   const int all = h4nb::max_over_ranks(code);
   if (!all) return 0;
-  const int root_code = h4nb::max_over_ranks(h4nb::rank() == 0 ? code : 0);  // Second collective, only on error.
-  if (e && (h4nb::rank() == 0 || root_code == 0)) {
+  const bool local = e && !remote_setup_error(*e);
+  const int root_code = h4nb::max_over_ranks(h4nb::rank() == 0 && local ? code : 0);  // Second collective, only on error.
+  if (local && (h4nb::rank() == 0 || root_code == 0)) {
     if (h4nb::ranks() > 1) std::fprintf(stderr, "h4nb_run: rank %d of %d:\n", h4nb::rank(), h4nb::ranks());
     settings_main_error("h4nb_run", *e);
   }
   return all;
+}
+
+// Input fingerprint (MPI-H1). Each rank computes it from its own settings and input file. The ranks compare it
+// before the first collective of the run. The entries are "name=text". The text of a number is its value.
+struct InputEntry {
+  std::string name, text;
+};
+
+// FNV-1a 64-bit hash of n bytes. h continues a hash. The default is the offset basis.
+static uint64_t fnv1a(const void* data, size_t n, uint64_t h = 0xcbf29ce484222325ULL) {
+  const unsigned char* b = static_cast<const unsigned char*>(data);
+  for (size_t i = 0; i < n; ++i) h = (h ^ b[i]) * 0x100000001b3ULL;
+  return h;
+}
+
+static std::string hex64(uint64_t v) {
+  char b[17];
+  std::snprintf(b, sizeof b, "%016llx", static_cast<unsigned long long>(v));
+  return b;
+}
+
+// The entries in a fixed order: one per declared key, then "help" and "ic bytes". The entry count is the same on all
+// ranks. help=1 reads no input, so "ic bytes" is "-" then. An unreadable file has the text "unreadable".
+// The error of an unreadable file comes later, from load_input().
+static std::vector<InputEntry> input_entries(const Settings& s, bool help) {
+  std::vector<InputEntry> out;
+  for (const Setting& k : s.keys()) {
+    std::string text = k.value;  // The value as the source gave it.
+    if (!k.value.empty() && k.type == Setting::Real) {
+      char b[32];
+      std::snprintf(b, sizeof b, "%.17g", s.real(k.name));  // "1e-2" and "0.01" give the same text.
+      text = b;
+    } else if (!k.value.empty() && k.type == Setting::Int) {
+      text = std::to_string(s.integer(k.name));
+    }
+    out.push_back({k.name, text});
+  }
+  out.push_back({"help", help ? "1" : "0"});
+  std::string ic = "-";
+  if (!help) {
+    std::ifstream f(s.str("ic"), std::ios::binary);
+    if (f) {
+      const std::string bytes((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+      ic = hex64(fnv1a(bytes.data(), bytes.size()));
+    } else {
+      ic = "unreadable";
+    }
+  }
+  out.push_back({"ic bytes", ic});
+  return out;
+}
+
+// The fingerprint of all entries. The field separators keep "a=b" and "ab=" apart.
+static uint64_t entries_digest(const std::vector<InputEntry>& entries) {
+  uint64_t h = fnv1a(nullptr, 0);
+  for (const InputEntry& x : entries) {
+    const std::string line = x.name + "=" + x.text + "\n";
+    h = fnv1a(line.data(), line.size(), h);
+  }
+  return h;
+}
+
+// True when v has the same value on all ranks. It uses max_over_ranks() only, so it links in both builds.
+// The min of a 16-bit chunk c is 0xffff - max(0xffff - c). Four chunks cover the 64 bits.
+static bool same_on_all(uint64_t v) {
+  bool same = true;
+  for (int shift = 0; shift < 64; shift += 16) {
+    const int c = int((v >> shift) & 0xffff);
+    const int hi = h4nb::max_over_ranks(c), lo = 0xffff - h4nb::max_over_ranks(0xffff - c);
+    if (hi != lo) same = false;
+  }
+  return same;
+}
+
+// Agreement point 0 (MPI-H1). All ranks call it once, in the same order, before the help return. It returns 0 when
+// all ranks have the same input fingerprint and no error. Otherwise it returns the exit code. A rank with a parse error
+// comes to agree_setup() from main() instead. That call makes the same collective. On a mismatch, each rank prints
+// the entries that differ, with its own text.
+static int agree_inputs(const Settings& s, bool help) {
+  const std::vector<InputEntry> entries = input_entries(s, help);
+  if (const int code = agree_setup(0, nullptr)) return code;
+  if (same_on_all(entries_digest(entries))) return 0;
+  for (const InputEntry& x : entries)
+    if (!same_on_all(fnv1a(x.text.data(), x.text.size())))
+      std::fprintf(stderr, "h4nb_run: rank %d of %d: the value of %s differs between the ranks (this rank: %s)\n",
+                   h4nb::rank(), h4nb::ranks(), x.name.c_str(), x.text.c_str());
+  return 2;
 }
 
 static int run(int argc, char** argv) {
@@ -185,6 +289,8 @@ static int run(int argc, char** argv) {
   Settings s;
   declare(s);
   s.parse(argc, argv);
+  // Agreement point 0 (MPI-H1). It comes before the help return, so help=1 must be the same on all ranks.
+  if (const int code = agree_inputs(s, s.help())) return code;
   if (s.help()) {
     if (root) s.print_help(stdout, "h4nb_run");
     return 0;
@@ -290,11 +396,11 @@ static int run(int argc, char** argv) {
       std::filesystem::create_directories(out);
       s.write_used(out + "/config.used", "h4nb_run");
       write_run_info(out + "/run_info.txt", "h4nb_run", c.devices, argc, argv, rank_lines);
-      fe = std::fopen((out + "/energy.dat").c_str(), "w");
-      fm = std::fopen((out + "/momentum.dat").c_str(), "w");
-      ft = std::fopen((out + "/timesteps.dat").c_str(), "w");
-      fp = perf ? std::fopen((out + "/performance.dat").c_str(), "w") : nullptr;
-      fv = std::fopen((out + "/energy_periods.dat").c_str(), "w");
+      fe = std::fopen((out + "/energy.dat.tmp").c_str(), "w");
+      fm = std::fopen((out + "/momentum.dat.tmp").c_str(), "w");
+      ft = std::fopen((out + "/timesteps.dat.tmp").c_str(), "w");
+      fp = perf ? std::fopen((out + "/performance.dat.tmp").c_str(), "w") : nullptr;
+      fv = std::fopen((out + "/energy_periods.dat.tmp").c_str(), "w");
       if (!fe || !fm || !ft || !fv || (perf && !fp)) throw std::runtime_error("cannot write into " + out);
       // rel_err = |E - E0 - W_diss| / |E0|. W_diss is the work of the dissipative force since t = 0 (0 with dissipation=off).
       std::fprintf(fe, "# time K U E rel_err max_rel_err mean_rel_err W_diss\n");
@@ -305,10 +411,35 @@ static int run(int argc, char** argv) {
       file_error(e.what());
     }
   }
-  auto close_all = [&] {
-    for (FILE** f : {&fe, &fm, &ft, &fp, &fv})
-      if (*f) std::fclose(*f), *f = nullptr;
+  // Closes the open .dat files. A file that closed without error gets its final name. Otherwise, its .tmp file is
+  // removed. A publish error sets the file error on rank 0. Each call publishes the partial records of a run that ends early.
+  auto close_all = [&]() {
+    FILE** slots[5] = {&fe, &fm, &ft, &fp, &fv};
+    for (int i = 0; i < 5; ++i) {
+      if (!*slots[i]) continue;
+      const bool ok = std::ferror(*slots[i]) == 0 && std::fclose(*slots[i]) == 0;
+      *slots[i] = nullptr;
+      const std::string tmp = out + "/" + kDatNames[i] + ".tmp";
+      if (!ok) file_error("cannot write the .dat files in " + out);
+      if (ok && !g_file_error) {
+        try {
+          h4nb::publish_file(tmp, out + "/" + kDatNames[i]);
+        } catch (const std::exception& e) {
+          file_error(e.what());
+        }
+      } else {
+        std::remove(tmp.c_str());
+      }
+    }
   };
+  // The exit guard and the abort hook (main) call close_all. They run after an exception and before fatal() stops.
+  g_publish = [&] { close_all(); };
+  struct PublishOnExit {
+    ~PublishOnExit() {
+      if (g_publish) g_publish();
+      g_publish = nullptr;
+    }
+  } publish_on_exit;
   // Agreement point 2: rank 0 could write the first files.
   if (const int code = h4nb::max_over_ranks(g_file_error)) {
     close_all();
@@ -319,11 +450,12 @@ static int run(int argc, char** argv) {
   const auto t0 = Clock::now();
   std::unique_ptr<h4nb::Simulation> simp;
   try {
-    simp = std::make_unique<h4nb::Simulation>(p, c);
+    simp = make_simulation(p, c);
   } catch (const std::exception& e) {
     close_all();
-    if (root || nranks == 1) return settings_main_error("h4nb_run", e);
-    return dynamic_cast<const SettingsError*>(&e) ? 2 : 1;
+    if (nranks == 1) return settings_main_error("h4nb_run", e);
+    // The constructor throws on all ranks, so all ranks call the agreement. It prints the local error of each rank.
+    return agree_setup(dynamic_cast<const SettingsError*>(&e) ? 2 : 1, &e);
   }
   g_phase = Phase::Run;
   h4nb::Simulation& sim = *simp;
@@ -404,7 +536,7 @@ static int run(int argc, char** argv) {
         tracker.write(fv);
         std::fprintf(stderr, "h4nb_run: non-finite value (NaN or Inf) at t=%g\n", sim.time());
       }
-      close_all();
+      close_all();  // The partial results are kept.
       return 3;  // Exit codes: 1 = runtime error, 2 = settings error, 3 = numerical failure.
     }
     write_diag(sim.diagnostics());
@@ -449,11 +581,7 @@ static int run(int argc, char** argv) {
     std::string verdict = tracker.verdict(energy_tol, period_src, s.real("eps"), sim.time());
     if (drag) verdict += " (energy balance E - E0 - W_diss, " + std::string(dissipation_text) + ")";
     std::printf("%s\n", verdict.c_str());
-    for (FILE** f : {&fe, &fm, &ft, &fp, &fv})
-      if (*f) {
-        if (std::ferror(*f) || std::fclose(*f) != 0) file_error("cannot write the .dat files in " + out);
-        *f = nullptr;
-      }
+    close_all();
   }
   // Last agreement point: the final snapshot and the close of the files.
   if (const int code = h4nb::max_over_ranks(g_file_error)) return code;
@@ -463,6 +591,8 @@ static int run(int argc, char** argv) {
 }
 
 int main(int argc, char** argv) {
+  // fatal() (MPI_Abort) does not unwind, so it calls this hook first to publish the partial files.
+  h4nb::set_abort_hook([] { if (g_publish) g_publish(); });
   std::unique_ptr<h4nb::RankScope> scope;
   try {
     scope = std::make_unique<h4nb::RankScope>(argc, argv);

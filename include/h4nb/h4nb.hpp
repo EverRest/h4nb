@@ -24,13 +24,18 @@ enum class StepMode { Block, Fixed };
 enum class Dissipation { Off, LinearDrag };
 
 // Bits returned by Simulation::status(). A bit stays set after it is set once.
-enum StatusBits : unsigned { kNaN = 1u /* NaN or Inf */, kDtUnderflow = 2u, kClosePair = 4u };
+enum StatusBits : unsigned {
+  kNaN = 1u /* NaN or Inf */,
+  kDtUnderflow = 2u,
+  kClosePair = 4u,
+  kInitStepInvalid = 8u /* first step estimate not finite or not positive: coarsest level used (issue A1) */
+};
 
 struct Config {
   double G = 1.0;
   double eps2 = 0.0;          // Plummer softening squared. 0 means Newtonian gravity (default).
   double eta = 0.01;          // Aarseth accuracy parameter
-  double eta_init = 0.01;     // first step: dt = eta_init * |a| / |j|
+  double eta_init = 0.01;     // first step: Aarseth dt at t = 0, with eta_init in place of eta. No force: level 0.
   double dt_max = 1.0 / 64;   // Step of level 0. The advance_to() times must be multiples of it.
   int max_level = 40;         // dt_min = dt_max / 2^max_level. Allowed: 1 to 50.
   StepMode mode = StepMode::Block;
@@ -60,6 +65,32 @@ struct Stats {
   double min_r2 = std::numeric_limits<double>::infinity();  // Smallest r^2 between a target and its closest source so far.
 };
 
+// Host counters (no GPU cost). They count block steps from the start, or from the last metrics(true).
+struct Metrics {
+  int64_t block_steps = 0;
+  int64_t active_total = 0;
+  uint64_t active_hist[64] = {};      // active_hist[log2_bin(NA)]: block steps with NA active particles.
+  uint64_t step_level_hist[51] = {};  // step_level_hist[L]: block steps at dt level L, from 0 to 50.
+};
+
+// floor(log2(n)). It gives 0 for n = 0 and for n = 1.
+inline int log2_bin(uint64_t n) {
+  int b = 0;
+  while (n >>= 1) ++b;
+  return b;
+}
+
+namespace detail {
+// Dt level of a block time tn (in ticks): max_level - ctz(tn), clamped to [0, max_level]. A tn that is a
+// multiple of dt_max (ctz >= max_level) gives 0. tn <= 0 gives 0.
+inline int block_level(int max_level, int64_t tn) {
+  if (tn <= 0) return 0;
+  int c = 0;
+  while (c < max_level && !((tn >> c) & 1)) ++c;
+  return max_level - c;
+}
+}  // namespace detail
+
 class Simulation {
  public:
   Simulation(const Particles& p, const Config& c);  // Uploads the data. Computes a and j. Selects the first steps.
@@ -74,6 +105,7 @@ class Simulation {
   Diagnostics diagnostics();        // K, U, E, P and L at time(). U costs N^2/2 pair evaluations.
   unsigned status() const;          // StatusBits
   Stats stats() const;
+  Metrics metrics(bool reset = false);  // Host counters. reset = true sets them to 0 after the copy.
 
  private:
   struct Impl;
@@ -82,6 +114,8 @@ class Simulation {
 
 Particles load_text(const std::string& path);  // Lines "id m x y z vx vy vz". A line that starts with '#' is a comment.
 void write_snapshot(const std::string& path, const Particles& p, double time);
+// Renames tmp to path. On error it removes tmp and throws std::runtime_error. Use it after a checked close of tmp.
+void publish_file(const std::string& tmp, const std::string& path);
 Particles read_snapshot(const std::string& path, double* time = nullptr);
 std::string build_info();  // "key: value" lines: commit, build type, architectures, CUDA versions, compiler. It does not throw.
 
@@ -110,5 +144,8 @@ std::string rank_table(int device_offset);
 // (MPI_Abort with code). Build without MPI: it calls std::exit(code). Use it for an error after which the ranks
 // cannot agree (for example an exception on one rank only).
 [[noreturn]] void abort_ranks(int code, const std::string& what);
+// Sets a function that abort_ranks() and the MPI abort path of the library call before they stop the ranks.
+// Use it to publish partial files. Null: no hook.
+void set_abort_hook(void (*hook)());
 
 }  // namespace h4nb

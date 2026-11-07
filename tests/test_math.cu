@@ -70,13 +70,23 @@ static void test_update_particle() {
   int64_t t = 0, next = 0;
   int lv = 0;
 
-  // First step: dt = 0.01 * |a| / |j| = 0.01, so level 7 (1/128 = 0.0078), next = 2^(10-7) ticks.
+  // First step: the level is a placeholder (0). init_level() sets the real one (cold start, issue A1).
   StepParams p = make_params(c, tick, 0, true);
   unsigned st = update_particle(p, false, a1, j1, 4.0, x, v, a, j, t, next, lv);
   CHECK(st == 0);
-  CHECK(lv == 7);
-  CHECK(next == 8);
+  CHECK(lv == 0);
+  CHECK(next == 1024);
   CHECK(a.x == 1.0 && j.y == 1.0);
+
+  // init_level(): snap s = (1,0,0), crackle 0: dt = sqrt(0.01 * (1 + 1) / 1) = 0.1414, so level 3 (1/8 = 0.125).
+  unsigned sl = 0;
+  CHECK(init_level(p, a1, j1, d4{1, 0, 0, 0}, z, sl) == 3 && sl == 0);
+  // Zero snap and crackle: the estimate is infinite. Level 0 and kInitStepInvalid.
+  unsigned si = 0;
+  CHECK(init_level(p, a1, j1, z, z, si) == 0 && si == kInitStepInvalid);
+  // No force at all (a = j = s = c = 0, e.g. G = 0 without drag): level 0 and no status bit.
+  unsigned sz = 0;
+  CHECK(init_level(p, z, z, z, z, sz) == 0 && sz == 0);
 
   // Centre body: zero force, level 0 in adaptive mode.
   unsigned sc = update_particle(p, true, a1, j1, 4.0, x, v, a, j, t, next, lv);

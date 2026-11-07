@@ -1,6 +1,8 @@
 #include <cmath>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
+#include <system_error>
 #include <sstream>
 #include <stdexcept>
 #include <unordered_map>
@@ -78,8 +80,19 @@ Particles load_text(const std::string& path) {
   return p;
 }
 
+void publish_file(const std::string& tmp, const std::string& path) {
+  std::error_code ec;
+  std::filesystem::rename(tmp, path, ec);
+  if (ec) {
+    std::filesystem::remove(tmp, ec);
+    throw std::runtime_error("cannot write " + path + ": " + ec.message());
+  }
+}
+
 void write_snapshot(const std::string& path, const Particles& p, double time) {
-  std::ofstream f(path, std::ios::binary);
+  // Write to a temporary name. The data reaches path only after a checked close (D1).
+  const std::string tmp = path + ".tmp";
+  std::ofstream f(tmp, std::ios::binary);
   if (!f) throw std::runtime_error("cannot write " + path);
   Header h{};
   std::memcpy(h.magic, kMagic, 8);
@@ -89,7 +102,13 @@ void write_snapshot(const std::string& path, const Particles& p, double time) {
   f.write(reinterpret_cast<const char*>(&h), sizeof h);
   auto put = [&](const auto& v) { f.write(reinterpret_cast<const char*>(v.data()), std::streamsize(v.size() * 8)); };
   put(p.id); put(p.m); put(p.x); put(p.y); put(p.z); put(p.vx); put(p.vy); put(p.vz);
-  if (!f) throw std::runtime_error("write failed: " + path);
+  f.close();  // Buffered data is written here. A failed flush sets the fail bit.
+  if (!f) {
+    std::error_code ec;
+    std::filesystem::remove(tmp, ec);
+    throw std::runtime_error("write failed: " + path);
+  }
+  publish_file(tmp, path);
 }
 
 Particles read_snapshot(const std::string& path, double* time) {

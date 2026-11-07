@@ -1,8 +1,10 @@
 #include <cub/cub.cuh>
+#include <thrust/device_vector.h>
 #include <thrust/iterator/counting_iterator.h>
 #include <algorithm>
 #include <climits>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 #include <exception>
 #include <set>
@@ -159,6 +161,7 @@ struct Simulation::Impl {
   std::vector<int64_t> ids;
   std::vector<Dev> d;
   Stats st;
+  Metrics mx;                    // Host counters for metrics(). Same block steps as st.
   // The particle set has P parts [base, base + n). One process: one part for each device, P = devices.size().
   // MPI (several ranks): one part for each rank, P = ranks(). Then d holds one device, the GPU of this rank.
   bool mpi = false;
@@ -176,15 +179,22 @@ struct Simulation::Impl {
   }
 
   Impl(const Particles& p, const Config& cfg) : c(cfg), N(int(p.size())) {
+    // Q1: the destructor does not run when a constructor throws. So release the CUDA resources here.
+    // release() is safe to call twice: the second call finds d empty.
+    try {
 #ifdef H4NB_HAVE_MPI
-    if (comm::active()) {
-      construct_mpi(p);
-      return;
-    }
+      if (comm::active()) {
+        construct_mpi(p);
+        return;
+      }
 #endif
-    setup(p);
-    step(true);
-    sync();
+      setup(p);
+      step(true);
+      sync();
+    } catch (...) {
+      release();
+      throw;
+    }
   }
 
 #ifdef H4NB_HAVE_MPI
@@ -195,6 +205,13 @@ struct Simulation::Impl {
     mpi = true;
     P = comm::size();
     part0 = comm::rank();
+    // MPI-H3: collective check, so all ranks agree. It runs before any allocation. Thus a throw needs no release.
+    const int ca = comm::cuda_aware_all();
+    if (ca < 0 && !c.mpi_host_staging && comm::rank() == 0)
+      std::fprintf(stderr,
+                   "h4nb: warning: cannot check that MPI is CUDA-aware. Set mpi_host_staging=1 if the run fails.\n");
+    const std::string why = comm::staging_error(ca, c.mpi_host_staging);
+    if (!why.empty()) throw std::invalid_argument(why);
     int code = 0;
     std::exception_ptr err;
     try {
@@ -375,12 +392,57 @@ struct Simulation::Impl {
     return f();
   }
 
+  // Cold start (issue A1). The first levels use the full Aarseth estimate at t = 0. Snap and crackle need all sources,
+  // so the state (x, v, a, j) of all particles is gathered on the host. Then each device sets the levels of its
+  // owned particles. Fixed mode keeps fixed_level. The center (fixed_center) keeps the level of the update.
+  // ponytail: host gather of 4 N vectors, once at start-up. Upgrade: device all-gather, as in step().
+  void init_levels() {
+    if (c.mode == StepMode::Fixed) return;
+    sync();
+    std::vector<d4> h[4];
+    for (auto& v : h) v.resize(size_t(N));
+    for (auto& e : d) {
+      use(e);
+      const d4* src[4] = {e.x, e.v, e.a, e.j};
+      for (int k = 0; k < 4; ++k)
+        H4_CUDA(cudaMemcpy(h[k].data() + e.base, src[k], size_t(e.n) * sizeof(d4), cudaMemcpyDeviceToHost));
+    }
+#ifdef H4NB_HAVE_MPI
+    if (mpi) {  // Each rank has its own part. The allgather only copies the other parts (no floating-point sum).
+      std::vector<int> cnt(P), dsp(P);  // Use (P). Do not use (size_t(P)): see step().
+      comm::allgather_int(d[0].n, cnt.data());
+      comm::allgather_int(d[0].base, dsp.data());
+      for (auto& v : h) comm::allgatherv_d4(v.data(), cnt.data(), dsp.data());
+    }
+#endif
+    // Full copies on each device. The vectors live until the kernels end (sync below).
+    std::vector<thrust::device_vector<d4>> f[4];
+    for (auto& e : d) {
+      use(e);
+      for (int k = 0; k < 4; ++k) f[k].emplace_back(h[k]);
+    }
+    const StepParams p = make_params(c, tick, 0, true);
+    for (size_t g = 0; g < d.size(); ++g) {
+      Dev& e = d[g];
+      use(e);
+      const int center = (c.fixed_center && e.base == 0) ? 0 : -1;
+      if (e.n)
+        init_level_kernel<<<blocks(e.n, 256), 256, 0, e.s>>>(e.n, e.base, N, f[0][g].data().get(), f[1][g].data().get(),
+                                                              f[2][g].data().get(), f[3][g].data().get(), p, c.eps2,
+                                                              c.dissipation == Dissipation::LinearDrag, center, e.level,
+                                                              e.next, e.status);
+    }
+    sync();
+    H4_CUDA(cudaGetLastError());
+  }
+
   // One block step. See "How a block step works" in the plan.
   // ponytail: two host syncs per block step (about 10 to 30 us). This matters only when NA is very small. Upgrade: CUDA graphs or device-side scheduling (O4).
   void step(bool init) {
 #ifdef H4NB_HAVE_MPI
     if (mpi) {
       step_mpi(init);
+      if (init) init_levels();
       return;
     }
 #endif
@@ -416,6 +478,7 @@ struct Simulation::Impl {
       off[size_t(g)] = NA;
       NA += na[size_t(g)];
     }
+    mx.active_hist[log2_bin(uint64_t(NA))]++;
     // All-gather of the active targets.
     for (int g = 0; g < G; ++g) {
       Dev& e = d[size_t(g)];
@@ -472,6 +535,10 @@ struct Simulation::Impl {
     T = Tn;
     ++st.block_steps;
     st.active_total += NA;
+    ++mx.block_steps;
+    mx.active_total += NA;
+    mx.step_level_hist[detail::block_level(c.max_level, Tn)]++;
+    if (init) init_levels();
   }
 
 #ifdef H4NB_HAVE_MPI
@@ -519,6 +586,7 @@ struct Simulation::Impl {
     comm::allgather_int(*e.h_nsel, na.data());
     int NA = 0;
     for (int h = 0; h < P; ++h) off[size_t(h)] = NA, NA += na[size_t(h)];
+    mx.active_hist[log2_bin(uint64_t(NA))]++;
     const int m = na[size_t(r)], o = off[size_t(r)];
     if (m) gather_kernel<<<blocks(m, 256), 256, 0, e.s>>>(m, e.act, e.xp, e.vp, e.base, e.tx + o, e.tv + o, e.tid + o);
     if (stage) {
@@ -574,6 +642,9 @@ struct Simulation::Impl {
     T = Tn;
     ++st.block_steps;
     st.active_total += NA;
+    ++mx.block_steps;
+    mx.active_total += NA;
+    mx.step_level_hist[detail::block_level(c.max_level, Tn)]++;
   }
 
   Particles state_mpi();          // Below. Collective.
@@ -606,6 +677,13 @@ void Simulation::advance_to(double t) {
 }
 
 double Simulation::time() const { return double(impl_->T) * impl_->tick; }
+Metrics Simulation::metrics(bool reset) {
+  Impl& m = *impl_;
+  Metrics out = m.mx;  // Host data only. No sync is needed: NA is the same on all ranks.
+  if (reset) m.mx = Metrics{};
+  return out;
+}
+
 Stats Simulation::stats() const {
   Impl& m = *impl_;
 #ifdef H4NB_HAVE_MPI

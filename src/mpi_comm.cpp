@@ -3,6 +3,9 @@
 // It holds the internal functions of src/mpi_comm.hpp and the public rank functions of include/h4nb/h4nb.hpp.
 // The application initializes MPI (directly or with h4nb::RankScope). The library does not call MPI_Init by itself.
 #include <mpi.h>
+#if defined(OPEN_MPI)
+#include <mpi-ext.h>  // MPIX_CUDA_AWARE_SUPPORT and MPIX_Query_cuda_support (Open MPI).
+#endif
 #include <cuda_runtime.h>
 #include <unistd.h>
 #include <cstdio>
@@ -16,6 +19,8 @@
 namespace h4nb {
 namespace comm {
 namespace {
+
+void (*g_abort_hook)() = nullptr;  // Set by h4nb::set_abort_hook. Called before fatal() stops the ranks.
 
 bool initialized() {
   int init = 0, fin = 0;
@@ -118,8 +123,33 @@ void alltoallv_d4(const void* send, const int* scounts, const int* sdispls, void
   H4_MPI(MPI_Alltoallv(send, scounts, sdispls, t, recv, rcounts, rdispls, t, cm()));
 }
 
+int cuda_aware() {
+#if defined(OPEN_MPI) && defined(MPIX_CUDA_AWARE_SUPPORT)
+#if MPIX_CUDA_AWARE_SUPPORT
+  return MPIX_Query_cuda_support() ? 1 : 0;
+#else
+  return 0;  // This Open MPI build has no CUDA support.
+#endif
+#elif defined(MPIX_GPU_CLASS_CUDA)  // MPICH 4.1 and later.
+  int ok = 0;
+  if (MPIX_GPU_query_support(MPIX_GPU_CLASS_CUDA, &ok) != MPI_SUCCESS) return -1;
+  return ok ? 1 : 0;
+#else
+  return -1;  // No query in this MPI library.
+#endif
+}
+
+int cuda_aware_all() {
+  // Worst answer first: min picks no (0), then unknown (1 here, -1 after decoding), then yes (2).
+  auto code = [](int v) { return v == 0 ? 0 : v < 0 ? 1 : 2; };
+  int64_t v = code(cuda_aware());
+  if (active()) min_i64(&v, 1);
+  return v == 0 ? 0 : v == 1 ? -1 : 1;
+}
+
 void fatal(const std::string& what, int code) {
-  std::fflush(nullptr);  // Keep the records that the tools wrote so far (energy.dat and others).
+  if (g_abort_hook) g_abort_hook();  // The tool publishes its partial .dat files here.
+  std::fflush(nullptr);  // Keep the records that the tools wrote so far.
   const int r = initialized() ? state().rank : 0, n = initialized() ? state().size : 1;
   std::fprintf(stderr, "h4nb: fatal error on rank %d of %d: %s. All ranks stop (MPI_Abort).\n", r, n, what.c_str());
   std::fflush(stderr);
@@ -196,5 +226,7 @@ std::string rank_table(int device_offset) {
 }
 
 void abort_ranks(int code, const std::string& what) { comm::fatal(what, code); }
+
+void set_abort_hook(void (*hook)()) { comm::g_abort_hook = hook; }
 
 }  // namespace h4nb

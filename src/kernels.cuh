@@ -32,5 +32,12 @@ template <int TILE>
 __global__ void potential_kernel(int n, const d4* __restrict__ xall, int ns, int sbase, int chunk, double eps2,
                                  double* __restrict__ pphi);
 __global__ void sum_phi(int n, int nparts, const double* pphi, double* phi);
+// Cold start (issue A1). Owned particle k (global index base + k) gets its first level and next (T = 0).
+// The snap and crackle use all N sources, plus the drag terms when drag is set (global particle 0 has none).
+// x, v, a, j are the full arrays in global order, with G applied to a and j.
+// Thread k skips the global index center (-1: none). Its level was set by the update (fixed or 0).
+__global__ void init_level_kernel(int n, int base, int N, const d4* x, const d4* v, const d4* a, const d4* j,
+                                  StepParams p, double eps2, bool drag, int center, int* level, int64_t* next,
+                                  unsigned* status);
 
 }  // namespace h4nb

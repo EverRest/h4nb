@@ -42,5 +42,18 @@ void alltoallv_d4(const void* send, const int* scounts, const int* sdispls, void
 // Use it when one rank fails and the other ranks can wait in a collective (docs/multi-node-design.md section 5).
 [[noreturn]] void fatal(const std::string& what, int code = 1);
 
+// CUDA-aware MPI (MPI-H3). Local answer of this rank: 1 yes, 0 no, -1 unknown (no query in this MPI library).
+int cuda_aware();
+// Collective. Every rank gets the worst answer of all ranks: no (0) beats unknown (-1), which beats yes (1).
+int cuda_aware_all();
+
+// Returns the error text when the MPI buffers are device pointers that the MPI library may not accept.
+// That is: MPI is not CUDA-aware (0) and staging is off. Returns "" otherwise. For -1 (unknown) it returns ""
+// and the caller prints one warning on rank 0. Pure function: no MPI call.
+inline std::string staging_error(int cuda_aware_value, bool staging) {
+  if (staging || cuda_aware_value != 0) return "";
+  return "MPI is not CUDA-aware. Set mpi_host_staging=1, or use an MPI library with CUDA support.";
+}
+
 }  // namespace comm
 }  // namespace h4nb

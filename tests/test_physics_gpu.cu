@@ -12,6 +12,9 @@ int main() {
   }
   triple(make, true);
   triple(make, false);
+  drag_decay(make, 1.0);
+  drag_kepler(make, 0.1, 5.0);
+  drag_kepler(make, 0.5, 5.0);
 
   auto make2 = [](const h4nb::Particles& p, h4nb::Config c) {  // the same physics on 2 virtual devices
     c.devices = {0, 0};

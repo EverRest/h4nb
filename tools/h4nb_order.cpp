@@ -6,6 +6,7 @@
 #include <cmath>
 #include <cstdio>
 #include "h4nb/h4nb.hpp"
+#include "input.hpp"
 #include "settings.hpp"
 
 struct Rel { double r[3], v[3]; };
@@ -58,7 +59,8 @@ int main(int argc, char** argv) try {
   bool pass = levels > 1;
   for (int k = 0; k < levels; ++k) {
     c.fixed_level = level0 + k;
-    h4nb::Simulation sim(p, c);
+    auto simp = make_simulation(p, c);
+    h4nb::Simulation& sim = *simp;
     const h4nb::Diagnostics d0 = sim.diagnostics();
     sim.advance_to(t_end);
     const h4nb::Particles s = sim.state();

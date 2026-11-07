@@ -37,6 +37,9 @@ __global__ void force_kernel(int na, const d4* __restrict__ tx, const d4* __rest
     gi = tid[i];
   }
   AJ f;
+  // A warp with no target (P1) skips the pair loop. The whole warp takes the same path, so there is no divergence.
+  // The warp still runs the loads and the barriers, so every thread reaches __syncthreads.
+  const bool warp_active = blockIdx.x * TILE + (threadIdx.x / 32) * 32 < na;
   for (int t0 = j0; t0 < j1; t0 += TILE) {
     const int js = t0 + threadIdx.x;
     if (js < j1) {
@@ -45,9 +48,11 @@ __global__ void force_kernel(int na, const d4* __restrict__ tx, const d4* __rest
     }
     __syncthreads();
     const int nt = min(TILE, j1 - t0);
+    if (warp_active) {
 #pragma unroll 4
-    for (int k = 0; k < nt; ++k)
-      if (sbase + t0 + k != gi) accumulate(f, xi, vi, shx[k], shv[k], eps2);
+      for (int k = 0; k < nt; ++k)
+        if (sbase + t0 + k != gi) accumulate(f, xi, vi, shx[k], shv[k], eps2);
+    }
     __syncthreads();
   }
   if (i < na) {
@@ -152,6 +157,28 @@ __global__ void sum_phi(int n, int nparts, const double* __restrict__ pphi, doub
   double s = 0;
   for (int y = 0; y < nparts; ++y) s += pphi[size_t(y) * n + i];
   phi[i] = s;
+}
+
+// ponytail: naive O(N^2) pass with global loads, run once at start-up. Upgrade: shared-memory tiles as in force_kernel.
+__global__ void init_level_kernel(int n, int base, int N, const d4* __restrict__ x, const d4* __restrict__ v,
+                                  const d4* __restrict__ a, const d4* __restrict__ j, StepParams p, double eps2,
+                                  bool drag, int center, int* __restrict__ level, int64_t* __restrict__ next,
+                                  unsigned* status) {
+  const int k = blockIdx.x * blockDim.x + threadIdx.x;
+  if (k >= n || base + k == center) return;
+  const int i = base + k;
+  SC sc;
+  for (int s = 0; s < N; ++s)
+    if (s != i) accumulate_sc(sc, x[i], v[i], a[i], j[i], x[s], v[s], a[s], j[s], eps2);
+  d4 snap{p.G * sc.s[0], p.G * sc.s[1], p.G * sc.s[2], 0.0};
+  d4 crackle{p.G * sc.c[0], p.G * sc.c[1], p.G * sc.c[2], 0.0};
+  // Global particle 0 has no drag (same rule as correct_kernel). The others have it if drag is on.
+  if (drag && i != 0) add_drag_sc(p.drag_tau, j[i], snap, crackle);
+  unsigned st = 0;
+  const int lv = init_level(p, a[i], j[i], snap, crackle, st);
+  level[k] = lv;
+  next[k] = int64_t(1) << (p.max_level - lv);
+  if (st) atomicOr(status, st);
 }
 
 }  // namespace h4nb

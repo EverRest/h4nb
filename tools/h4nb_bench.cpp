@@ -18,6 +18,7 @@
 #include <vector>
 #include "disk.hpp"
 #include "h4nb/h4nb.hpp"
+#include "input.hpp"
 #include "run_info.hpp"
 #include "settings.hpp"
 
@@ -74,7 +75,7 @@ static int run(int argc, char** argv) try {
   write_run_info(out + "/run_info.txt", "h4nb_bench", c.devices, argc, argv);
 
   // Warm-up: the first Simulation creates the CUDA context on each device. It is not counted.
-  { h4nb::Simulation w(make_disk(1023, 0.5, 1.0, 10.0, seed), c); w.stats(); }
+  { auto w = make_simulation(make_disk(1023, 0.5, 1.0, 10.0, seed), c); w->stats(); }
 
   FILE* f = std::fopen((out + "/bench.dat").c_str(), "w");
   if (!f) throw std::runtime_error("cannot write " + out + "/bench.dat");
@@ -95,7 +96,8 @@ static int run(int argc, char** argv) try {
         c.tile = tile;
         c.blocks_per_sm = b;
         const auto t0 = Clock::now();
-        h4nb::Simulation sim(p, c);
+        auto simp = make_simulation(p, c);
+        h4nb::Simulation& sim = *simp;
         const h4nb::Stats st0 = sim.stats();  // stats() waits for the devices. The first force pass is counted here.
         const double init = since(t0);
         const double rate = N * (N - 1) / init, gflops = kFlopPerPair * rate / 1e9;

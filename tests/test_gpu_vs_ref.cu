@@ -56,6 +56,32 @@ int main() {
       }
   }
 
+  // LinearDrag with a background flow: forces, levels and the work W_diss agree with the reference.
+  {
+    h4nb::Config c;
+    c.dt_max = 0.5;
+    c.eta = 0.01;
+    c.max_level = 30;
+    c.eps2 = 1e-4;
+    c.dissipation = h4nb::Dissipation::LinearDrag;
+    c.drag_tau = 1.0;
+    c.drag_vbg[0] = 0.1;
+    ref::Ref r(p, c);
+    r.advance_to(2.0);
+    for (const auto& devs : sets) {
+      c.devices = devs;
+      h4nb::Simulation s(p, c);
+      s.advance_to(2.0);
+      const double d = max_diff(s.state(), r.state());
+      const double wg = s.diagnostics().W_diss, wr = r.w_diss();
+      std::printf("drag devices=%zu: max|gpu-ref|=%.2e W_diss gpu=%.12e ref=%.12e\n", devs.size(), d, wg, wr);
+      CHECK(d <= 1e-10);
+      CHECK(std::fabs(wg - wr) <= 1e-10 * std::max(1.0, std::fabs(wr)));
+      CHECK(s.levels() == r.levels());
+      CHECK(s.status() == 0);
+    }
+  }
+
   // Determinism (constitution IV): the same input and devices give the same bits, twice.
   {
     h4nb::Config c;

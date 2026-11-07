@@ -62,6 +62,36 @@ H4_HD double aarseth_dt(double a, double j, double s, double c, double eta) {
   return ::sqrt(eta * (a * s + j * j) / (j * c + s * s));
 }
 
+// Snap and crackle at t = 0, summed over the sources (G not applied; the caller multiplies by G).
+struct SC {
+  double s[3] = {0, 0, 0}, c[3] = {0, 0, 0};  // Snap and crackle, components x, y, z.
+};
+
+// Adds the snap and crackle of source (xj, vj, aj, jj) on target (xi, vi, ai, ji). The masses are in xj.w.
+// These are the time derivatives of mr^-3 dr, with da = aj - ai and dj = jj - ji (accelerations with G).
+// The caller skips i == j. The formulas were checked against Taylor series of dr / |dr|^3 (issue A1).
+H4_HD void accumulate_sc(SC& f, const d4& xi, const d4& vi, const d4& ai, const d4& ji, const d4& xj, const d4& vj,
+                         const d4& aj, const d4& jj, double eps2) {
+  const double dr[3] = {xj.x - xi.x, xj.y - xi.y, xj.z - xi.z};
+  const double dv[3] = {vj.x - vi.x, vj.y - vi.y, vj.z - vi.z};
+  const double da[3] = {aj.x - ai.x, aj.y - ai.y, aj.z - ai.z};
+  const double dj[3] = {jj.x - ji.x, jj.y - ji.y, jj.z - ji.z};
+  const double rinv = h4_rsqrt(dr[0] * dr[0] + dr[1] * dr[1] + dr[2] * dr[2] + eps2);
+  const double rinv2 = rinv * rinv;
+  const double r3 = xj.w * rinv * rinv2, r5 = r3 * rinv2, r7 = r5 * rinv2, r9 = r7 * rinv2;  // Mass in each term.
+  const double p = dr[0] * dv[0] + dr[1] * dv[1] + dr[2] * dv[2];                            // dr . dv
+  const double u = dv[0] * dv[0] + dv[1] * dv[1] + dv[2] * dv[2] + dr[0] * da[0] + dr[1] * da[1] + dr[2] * da[2];
+  const double up =
+      3.0 * (dv[0] * da[0] + dv[1] * da[1] + dv[2] * da[2]) + dr[0] * dj[0] + dr[1] * dj[1] + dr[2] * dj[2];
+  for (int k = 0; k < 3; ++k) {
+    const double s = da[k] * r3 - 6.0 * p * dv[k] * r5 - 3.0 * u * dr[k] * r5 + 15.0 * p * p * dr[k] * r7;
+    const double c = dj[k] * r3 - 9.0 * p * da[k] * r5 + (45.0 * p * p * r7 - 9.0 * u * r5) * dv[k] +
+                     (-3.0 * up * r5 + 45.0 * u * p * r7 - 105.0 * p * p * p * r9) * dr[k];
+    f.s[k] += s;
+    f.c[k] += c;
+  }
+}
+
 // Hermite corrector (TZ 3.4, Makino and Aarseth 1992). It updates x and v, but not x.w. It returns the Aarseth step at t1.
 H4_HD double correct(d4& x, d4& v, const d4& a0, const d4& j0, const d4& a1, const d4& j1, double h, double eta) {
   const double c12 = h * h * (1.0 / 12.0);
@@ -117,6 +147,31 @@ inline StepParams make_params(const Config& c, double tick, int64_t T, bool init
                     {c.drag_vbg[0], c.drag_vbg[1], c.drag_vbg[2]}};
 }
 
+// Adds the drag part to the snap and crackle at t = 0 (LinearDrag, particle with drag). On input, s and c are the
+// gravity terms (with G). j is the total jerk, with drag. The drag acceleration -(v - vbg) / tau has d/dt = -a_tot / tau,
+// so the total snap gets -j / tau, and the total crackle gets -s / tau (with the new s).
+H4_HD void add_drag_sc(double tau, const d4& j, d4& s, d4& c) {
+  s = d4{s.x - j.x / tau, s.y - j.y / tau, s.z - j.z / tau, 0.0};
+  c = d4{c.x - s.x / tau, c.y - s.y / tau, c.z - s.z / tau, 0.0};
+}
+
+// First block level from the Aarseth estimate at t = 0 (cold start, issue A1), with eta_init. s and c are the snap
+// and crackle with G and drag. If a, j, s and c are all 0 (no force), the level is the coarsest one with no status bit.
+// An estimate that is not finite or not positive gives the coarsest level and sets kInitStepInvalid.
+H4_HD int init_level(const StepParams& p, const d4& a, const d4& j, const d4& s, const d4& c, unsigned& st) {
+  if (p.fixed_level >= 0) return p.fixed_level;
+  if (norm3(a) == 0 && norm3(j) == 0 && norm3(s) == 0 && norm3(c) == 0) return 0;
+  const double dt = aarseth_dt(norm3(a), norm3(j), norm3(s), norm3(c), p.eta_init);
+  if (!(dt > 0) || h4_nonfinite(dt)) {
+    st |= kInitStepInvalid;
+    return 0;
+  }
+  bool under = false;
+  const int lv = choose_level(dt, p.dt_max, 0, p.T, p.max_level, under);
+  if (under) st |= kDtUnderflow;
+  return lv;
+}
+
 // Applies the new force (a1, j1, already multiplied by G) to one active particle. It returns StatusBits.
 H4_HD unsigned update_particle(const StepParams& p, bool is_center, d4 a1, d4 j1, double r2min, d4& x, d4& v, d4& a,
                                d4& j, int64_t& t, int64_t& next, int& level) {
@@ -130,10 +185,10 @@ H4_HD unsigned update_particle(const StepParams& p, bool is_center, d4 a1, d4 j1
     j = d4{0, 0, 0, 0};
     lv = p.fixed_level >= 0 ? p.fixed_level : 0;
   } else if (p.init) {
+    // The level is set later by init_level() (cold-start pass in simulation.cu and reference.hpp). 0 is a placeholder.
     a = a1;
     j = j1;
-    lv = p.fixed_level >= 0 ? p.fixed_level
-                            : choose_level(p.eta_init * norm3(a1) / norm3(j1), p.dt_max, 0, p.T, p.max_level, under);
+    lv = p.fixed_level >= 0 ? p.fixed_level : 0;
   } else {
     const double dtw = correct(x, v, a, j, a1, j1, double(p.T - t) * p.tick, p.eta);
     a = a1;
@@ -189,6 +244,8 @@ H4_HD double dissipation_power_rate(const StepParams& p, double m, const d4& v, 
 // The work uses the corrected trapezoid rule over each step (4th order, the same order as the Hermite step):
 // W += h/2 (P0 + P1) + h^2/12 (P0' - P1'), with P' = m (a . a_diss + v . d(a_diss)/dt) = m (a . a_diss - v . a / tau).
 // a is the total acceleration that is stored at each end of the step.
+// Two passes give 4th order for the drag. Pass 1 uses the predicted velocity vp (error O(h^3)).
+// Pass 2 restarts from the saved state and uses the corrected velocity of pass 1 (error O(h^4)).
 template <Dissipation D>
 H4_HD unsigned update_particle_d(const StepParams& p, bool is_center, bool drag, d4 a1, d4 j1, const d4& vp, double r2min,
                                  d4& x, d4& v, d4& a, d4& j, int64_t& t, int64_t& next, int& level, double& wd) {
@@ -196,14 +253,25 @@ H4_HD unsigned update_particle_d(const StepParams& p, bool is_center, bool drag,
     return update_particle(p, is_center, a1, j1, r2min, x, v, a, j, t, next, level);
   } else {
     if (!drag || is_center) return update_particle(p, is_center, a1, j1, r2min, x, v, a, j, t, next, level);
-    dissipation_term<D>(p, vp, a1, j1);
-    const d4 v0 = v, a0 = a;
+    // a1, j1: gravity only. The drag is added in each pass.
+    const d4 ag = a1, jg = j1;
+    const d4 x0 = x, v0 = v, a0 = a, j0 = j;
+    const int64_t t0 = t, next0 = next;
+    const int level0 = level;
     const double h = double(p.T - t) * p.tick;
-    const unsigned st = update_particle(p, is_center, a1, j1, r2min, x, v, a, j, t, next, level);
+    // Pass 1: drag at the predicted velocity.
+    dissipation_term<D>(p, vp, a1, j1);
+    const unsigned st1 = update_particle(p, is_center, a1, j1, r2min, x, v, a, j, t, next, level);
+    // Pass 2: restore the saved state. Drag at the corrected velocity of pass 1.
+    const d4 v1 = v;
+    x = x0; v = v0; a = a0; j = j0; t = t0; next = next0; level = level0;
+    a1 = ag; j1 = jg;
+    dissipation_term<D>(p, v1, a1, j1);
+    const unsigned st2 = update_particle(p, is_center, a1, j1, r2min, x, v, a, j, t, next, level);
     if (!p.init)
       wd += 0.5 * h * (dissipation_power<D>(p, x.w, v0) + dissipation_power<D>(p, x.w, v)) +
             h * h / 12.0 * (dissipation_power_rate<D>(p, x.w, v0, a0) - dissipation_power_rate<D>(p, x.w, v, a));
-    return st;
+    return st1 | st2;
   }
 }
 

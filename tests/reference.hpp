@@ -19,6 +19,7 @@ class Ref {
     }
     if (c_.fixed_center) v_[0] = d4{0, 0, 0, 0};
     step(true);
+    init_levels();
   }
   void advance_to(double t) {
     const int64_t target = int64_t(std::llround(t / c_.dt_max)) << c_.max_level;
@@ -49,6 +50,25 @@ class Ref {
   }
 
  private:
+  // Cold start (issue A1): first levels from the full Aarseth estimate. Snap and crackle use all sources at t = 0.
+  // Same as init_level_kernel. The center (fixed_center, particle 0) keeps the level of the update.
+  void init_levels() {
+    const h4nb::StepParams p = h4nb::make_params(c_, tick_, 0, true);
+    for (int i = 0; i < n_; ++i) {
+      if (c_.fixed_center && i == 0) continue;
+      h4nb::SC sc;
+      for (int s = 0; s < n_; ++s)
+        if (s != i) h4nb::accumulate_sc(sc, x_[i], v_[i], a_[i], j_[i], x_[s], v_[s], a_[s], j_[s], c_.eps2);
+      d4 snap{c_.G * sc.s[0], c_.G * sc.s[1], c_.G * sc.s[2], 0.0};
+      d4 crackle{c_.G * sc.c[0], c_.G * sc.c[1], c_.G * sc.c[2], 0.0};
+      // Particle 0 has no drag (same rule as update()). The others have LinearDrag if it is on.
+      if (c_.dissipation == h4nb::Dissipation::LinearDrag && i != 0) h4nb::add_drag_sc(c_.drag_tau, j_[i], snap, crackle);
+      unsigned st = 0;
+      level_[i] = h4nb::init_level(p, a_[i], j_[i], snap, crackle, st);
+      next_[i] = int64_t(1) << (c_.max_level - level_[i]);
+      status_ |= st;
+    }
+  }
   void step(bool init) {
     const int64_t Tn = init ? 0 : *std::min_element(next_.begin(), next_.end());
     std::vector<d4> xp(n_), vp(n_);

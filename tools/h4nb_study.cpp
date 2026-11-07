@@ -76,7 +76,7 @@ static int run(int argc, char** argv) try {
     }
   const std::string ic = s.str("ic"), out = s.str("out");
   const h4nb::Particles p = load_input(ic);
-  if (p.size() < 2) throw std::runtime_error("the file " + ic + " has less than 2 particles");
+  if (p.size() < 2) throw SettingsError("the file " + ic + " has less than 2 particles");
   const double G = s.real("G");
   std::vector<double> t_ends = s.reals("t_ends");
   for (double t : t_ends)
@@ -148,7 +148,8 @@ static int run(int argc, char** argv) try {
     for (double eta : etas) {
       c.dt_max = dt;
       c.eta = eta;
-      h4nb::Simulation sim(p, c);
+      auto simp = make_simulation(p, c);
+      h4nb::Simulation& sim = *simp;
       const h4nb::Stats st0 = sim.stats();  // The init force pass is in st0. It is not counted.
       const h4nb::Diagnostics d0 = sim.diagnostics();
       double max_err = 0, err_sum = 0, wall = 0;

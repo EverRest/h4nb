@@ -130,3 +130,72 @@ void triple(Make make, bool fixed) {
   CHECK(dP <= (fixed ? 1e-13 : 1e-10));
   CHECK(sim->status() == 0);
 }
+
+// Work of the dissipative forces since t = 0 (Diagnostics::W_diss). E - E0 - W_diss is about 0.
+inline double w_diss_of(const ref::Ref& r) { return r.w_diss(); }
+inline double w_diss_of(h4nb::Simulation& s) { return s.diagnostics().W_diss; }
+
+// LinearDrag, G = 0, no background flow. Particle 1 has v(t) = v0 exp(-t / tau). Particle 0 has no drag.
+// The drag work is the kinetic energy change of particle 1: W_diss = 0.5 m (v^2 - v0^2). It is negative.
+template <class Make>
+void drag_decay(Make make, double tau) {
+  h4nb::Particles p;
+  p.id = {0, 1};
+  p.m = {1.0, 1.0};
+  p.x = {0.0, 1.0}; p.y = {0.0, 0.0}; p.z = {0.0, 0.0};
+  p.vx = {0.3, 0.5}; p.vy = {0.0, 0.2}; p.vz = {0.0, 0.0};
+  h4nb::Config c;
+  c.G = 0.0;
+  c.dissipation = h4nb::Dissipation::LinearDrag;
+  c.drag_tau = tau;
+  c.eta = 1e-5;
+  c.eta_init = 1e-5;
+  c.dt_max = 1.0 / 8;
+  c.max_level = 30;
+  auto sim = make(p, c);
+  const double K0 = 0.5 * (0.5 * 0.5 + 0.2 * 0.2);
+  double ev = 0, ew = 0;
+  for (int k = 1; k <= 32; ++k) {
+    sim->advance_to(k * c.dt_max);
+    const h4nb::Particles s = sim->state();
+    const double f = std::exp(-k * c.dt_max / tau);
+    ev = std::max(ev, std::hypot(s.vx[1] - 0.5 * f, s.vy[1] - 0.2 * f));
+    const double K = 0.5 * (s.vx[1] * s.vx[1] + s.vy[1] * s.vy[1]);
+    ew = std::max(ew, std::fabs(w_diss_of(*sim) - (K - K0)));
+    CHECK_NEAR(s.vx[0], 0.3, 1e-14);  // Particle 0 keeps its velocity.
+    CHECK_NEAR(s.vy[0], 0.0, 1e-14);
+  }
+  std::printf("drag_decay tau=%.2f: dv_max=%.2e dW_max=%.2e\n", tau, ev, ew);
+  CHECK(ev <= 1e-8);
+  CHECK(ew <= 1e-8);
+  CHECK(sim->status() == 0);
+}
+
+// Kepler orbit with LinearDrag on particle 1 (particle 0 has no drag), one orbit.
+// The energy balance holds: E - E0 - W_diss is about 0. The drag must act: |W_diss| is not small.
+template <class Make>
+void drag_kepler(Make make, double e, double tau) {
+  const TwoBody tb = two_body(e, 1e-3, false);
+  h4nb::Config c;
+  c.eta = 1e-5;
+  c.eta_init = 1e-5;
+  c.dt_max = 1.0 / 16;
+  c.max_level = 30;
+  c.dissipation = h4nb::Dissipation::LinearDrag;
+  c.drag_tau = tau;
+  auto sim = make(tb.p, c);
+  const h4nb::Diagnostics d0 = ref::direct_diagnostics(sim->state(), c.G, c.eps2);
+  const int n = int(2 * kPi / std::sqrt(tb.mu) / c.dt_max);
+  double dE = 0, wmax = 0;
+  for (int k = 1; k <= n; ++k) {
+    sim->advance_to(k * c.dt_max);
+    const h4nb::Diagnostics d = ref::direct_diagnostics(sim->state(), c.G, c.eps2);
+    const double w = w_diss_of(*sim);
+    dE = std::max(dE, std::fabs((d.E - d0.E - w) / d0.E));
+    wmax = std::max(wmax, std::fabs(w));
+  }
+  std::printf("drag_kepler e=%.1f tau=%.1f: |E-E0-W|_max=%.2e W_max=%.2e\n", e, tau, dE, wmax);
+  CHECK(dE <= 1e-8);
+  CHECK(wmax > 1e-3);
+  CHECK(sim->status() == 0);
+}

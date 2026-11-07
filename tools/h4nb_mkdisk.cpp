@@ -23,13 +23,20 @@ int main(int argc, char** argv) try {
   if (out.size() > 5 && out.compare(out.size() - 5, 5, ".snap") == 0) {
     h4nb::write_snapshot(out, p, 0.0);
   } else {
-    FILE* f = std::fopen(out.c_str(), "w");
+    // Write to a temporary name. Rename it only after a checked close (D1).
+    const std::string tmp = out + ".tmp";
+    FILE* f = std::fopen(tmp.c_str(), "w");
     if (!f) throw std::runtime_error("cannot write " + out);
     std::fprintf(f, "# id m x y z vx vy vz\n");
     for (size_t i = 0; i < p.size(); ++i)
       std::fprintf(f, "%lld %.17g %.17g %.17g %.17g %.17g %.17g %.17g\n", (long long)p.id[i], p.m[i], p.x[i], p.y[i],
                    p.z[i], p.vx[i], p.vy[i], p.vz[i]);
-    std::fclose(f);
+    const bool ok = std::ferror(f) == 0 && std::fclose(f) == 0;
+    if (!ok) {
+      std::remove(tmp.c_str());
+      throw std::runtime_error("cannot write " + out);
+    }
+    h4nb::publish_file(tmp, out);
   }
   const Periods T = periods(p);
   std::printf("N=%zu periods: mean=%.6g median=%.6g mass_weighted=%.6g\n", p.size(), T.mean, T.median, T.mass_weighted);
