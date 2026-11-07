@@ -103,7 +103,7 @@ Runs give bit-identical results only with the same `tile`, the same `blocks_per_
 
 | Key | Type | Default | Range | Meaning |
 |---|---|---|---|---|
-| `diag` | real | `dt_max` | multiple of `dt_max` | Interval of the energy and momentum records. Each record costs N²/2 pairs. |
+| `diag` | real | `dt_max` | multiple of `dt_max` | Interval of the energy and momentum records. Each record costs N²/2 pairs, a full state copy to the host and several syncs. With the default, this is an estimated 10-15 % of the run time (not measured; review P4). A larger `diag` is faster, but it shows energy errors less often. |
 | `snap` | real | 0 | multiple of `diag` | Snapshot interval. 0 and no `snap_times`: only the final snapshot (`snap_final.snap`). |
 | `snap_times` | real list | — | multiples of `diag`, ≤ `t_end` | Explicit snapshot times. Do not set it with `snap` > 0. |
 | `energy_tol` | real | 1e-8 | > 0 | Threshold for the pass or fail verdict in the report. It does not change the integration. |

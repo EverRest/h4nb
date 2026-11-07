@@ -61,6 +61,7 @@ src/kernels.cuh/.cu       CUDA kernels: predict, gather, force, partial sums, co
 src/simulation.cu         Simulation: device buffers, block-step loop, multi-GPU exchange, MPI phases, diagnostics
 src/mpi_comm.hpp/.cpp     MPI path (only with -DH4NB_MPI=ON): communicator, device per rank, collectives, MPI_Abort
 src/single_rank.cpp       Rank functions for a build without MPI (one rank)
+src/diag_sum.hpp/.cpp     Host sums of the diagnostics. One process and MPI use the same function
 src/io.cpp                Text initial conditions, binary snapshots
 tools/                    Thin command-line clients of the public API (h4nb_run, h4nb_mkdisk, h4nb_bench, h4nb_order)
 tests/                    CPU oracle (same math header), CPU and GPU tests
@@ -261,7 +262,7 @@ Rules:
 - All ranks read the settings and the input. Only rank 0 writes files (`config.used`, `run_info.txt`, the `.dat` files and the snapshots). `run_info.txt` has `ranks: <count>`, the MPI library and one `rank_<r>` line for each rank (host, local rank, GPU).
 - The `devices` key is ignored. Each rank uses one GPU: device 0 when the launcher shows one GPU to each task, otherwise `(local rank + device_offset) % device count`. The run stops with an error when a node has more ranks than GPUs.
 - Set `mpi_host_staging=1` when the MPI library is not CUDA-aware.
-- Bit-identical results need the same build, rank count and GPU model. Compare runs with different rank counts with the tolerance of the design (1e-10 force path, 1e-12 diagnostics). The energy values differ from the one-process values in the last bits.
+- Bit-identical results need the same build, rank count and GPU model. `mpirun -np P` and one process with P devices give the same bits, also in the energy values. Compare runs with different rank counts with the tolerance of the design (1e-10 force path, 1e-12 diagnostics).
 - Errors: a settings, input or file error, and a NaN, stop all ranks with the normal exit code (1, 2 or 3). A CUDA error, an MPI error or an error on one rank only stops all ranks with `MPI_Abort`. The message names the rank.
 - `h4nb_study` and `h4nb_bench` run as one process only. With more than one rank they stop with exit code 2.
 

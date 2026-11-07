@@ -140,9 +140,13 @@ double min_double(double v) {
   return v;
 }
 void allgather_int(int v, int* out) { H4_MPI(MPI_Allgather(&v, 1, MPI_INT, out, 1, MPI_INT, cm())); }
-void allgather_double(const double* in, int n, double* out) {
-  H4_MPI(MPI_Allgather(in, n, MPI_DOUBLE, out, n, MPI_DOUBLE, cm()));
+void gather_double(const double* in, int n, double* out) {
+  H4_MPI(MPI_Gather(in, n, MPI_DOUBLE, out, n, MPI_DOUBLE, 0, cm()));
 }
+void gatherv_double(const double* in, int n, double* out, const int* counts, const int* displs) {
+  H4_MPI(MPI_Gatherv(in, n, MPI_DOUBLE, out, counts, displs, MPI_DOUBLE, 0, cm()));
+}
+void bcast_double(double* buf, int n) { H4_MPI(MPI_Bcast(buf, n, MPI_DOUBLE, 0, cm())); }
 void allgatherv_d4(void* buf, const int* counts, const int* displs) {
   H4_MPI(MPI_Allgatherv(MPI_IN_PLACE, 0, MPI_DATATYPE_NULL, buf, counts, displs, state().d4, cm()));
 }

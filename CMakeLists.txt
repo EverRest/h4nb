@@ -22,7 +22,7 @@ find_package(CUDAToolkit REQUIRED)
 add_compile_options($<$<COMPILE_LANGUAGE:CUDA>:-lineinfo>)
 # Accuracy rule (TZ 4.4): never add --use_fast_math / -ffast-math. NaN checks rely on IEEE compares.
 
-add_library(h4nb src/io.cpp src/kernels.cu src/simulation.cu src/build_info.cu)
+add_library(h4nb src/io.cpp src/diag_sum.cpp src/kernels.cu src/simulation.cu src/build_info.cu)
 add_library(h4nb::h4nb ALIAS h4nb)
 # The public header has no CUDA type, so CUDA::cudart is a private link.
 target_link_libraries(h4nb PRIVATE CUDA::cudart)
@@ -111,6 +111,7 @@ set_tests_properties(exit_codes PROPERTIES LABELS cpu)
 h4nb_add_test(test_metrics tests/test_metrics.cu cpu)
 h4nb_add_test(test_mpi_staging tests/test_mpi_staging.cpp cpu)
 h4nb_add_test(test_run_agree tests/test_run_agree.cpp cpu)
+h4nb_add_test(test_diag_order tests/test_diag_order.cpp cpu)
 h4nb_add_test(test_physics_cpu tests/test_physics_cpu.cu cpu)
 h4nb_add_test(test_gpu_vs_ref tests/test_gpu_vs_ref.cu gpu)
 h4nb_add_test(test_physics_gpu tests/test_physics_gpu.cu gpu)

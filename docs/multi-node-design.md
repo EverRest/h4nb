@@ -74,7 +74,7 @@ Implementation (T030): the rule above is used. Two plain fields were added to `C
 
 1. Every sum in the force path uses a fixed order: rank 0, then rank 1, and so on. The library sums the received rows itself. It never uses `MPI_Reduce` or `MPI_Allreduce` with `MPI_SUM` on floating-point data in the force path. MPI does not guarantee the order of those operations.
 2. Order-independent operations are allowed. Use `MPI_MIN` for `Tn` and for the `minr2` bits. Use `MPI_BOR` for the status bits.
-3. The diagnostics sums use the same rule. Each rank sends its partial sum. Rank 0 adds the partials in rank order (Neumaier, see section 4).
+3. The diagnostics sums use the same rule. Each rank sends its row of per-particle values. Rank 0 adds the rows in rank order, then it makes the Neumaier sum over the particles (see section 10, note 2).
 4. No floating-point atomics (constitution IV).
 
 ### 2.2 What is bit-identical
@@ -82,7 +82,7 @@ Implementation (T030): the rule above is used. Two plain fields were added to `C
 | Case | Bit-identical? | Condition |
 |---|---|---|
 | Same build, same rank count, same device model per rank, same input | **Yes** | Required. This is FR-022 for MPI runs. |
-| One process, `devices = {0, 1}`, against `mpirun -n 2`, same device model | **Expected; verify** | Same partial sums in the same rank order. Same kernel launch geometry. |
+| One process, `devices = {0, 1}`, against `mpirun -n 2`, same device model | **Yes (verify on a GPU)** | Same partial sums in the same rank order. Same kernel launch geometry. The diagnostics use the same host function `diag_sum()`, and rank h has the role of device h (MPI-M1). |
 | Different rank count (for example 2 against 4) | **No** | The partial sums are split at different points. The sum tree changes. |
 | Different GPU model in one run (`sms` differs, so `split()` differs) | **No** | `split()` depends on the SM count. The chunks differ. |
 | Different MPI library or different compiler flags | **No** | Not tested. Record them with the result. |
@@ -92,6 +92,8 @@ Say this in every result file. Do not claim bit-identical results across rank co
 ### 2.3 Tolerance for different rank counts
 
 Compare runs with different rank counts with a written tolerance. Use the GPU test tolerances: 1e-10 for the force path and 1e-12 for diagnostics. The user approved them.
+
+This tolerance is not for `mpirun -n P` against one process with P devices. These runs give the same bits, also in the diagnostics (section 2.2). Compare them with `cmp`.
 
 ---
 
@@ -159,7 +161,7 @@ Use this design:
 3. Each rank computes the Neumaier partial sums of K, U, P and L for its own particles.
 4. Each rank sends 8 doubles to rank 0 (`MPI_Gather`). Rank 0 adds them in rank order with Neumaier summation.
 
-Result: the diagnostics cost is `O(N²/G)` per rank and `O(G)` data at rank 0. The diagnostic values differ from the single-process values in the last bits, because the sum order differs. Compare them with the tolerance of section 2.3.
+Result: the diagnostics cost is `O(N²/G)` per rank. The code sends `8·N·P` bytes to rank 0, not `O(G)` (section 10, note 2). The diagnostic values are bit-identical to one process with the same parts on P devices.
 
 ### 4.2 Snapshots and text output
 
@@ -295,7 +297,7 @@ The changes below touch principle V and the Hardware and Toolchain section. They
 | Latency per step at many ranks (3 collectives and 2 host syncs per block step) | Scaling stops when `N_active` is small. | Measure first (Nsight Systems). Gated O4 (CUDA graphs) and a batch of short steps. |
 | `MPI_Abort` loses the last output | The run log has gaps. | Write the energy record each interval with flush. Accept the loss at abort. |
 | Diagnostics do `N²/G` work per rank | Diagnostics cost more than one device. | Keep the interval large (FR-021). Measure the cost. |
-| Rank-order sum differs from the single-process sum in the last bits | Tests that compare the two need the tolerance. | Section 2.3. |
+| Diag point sends `8·N·P` bytes to rank 0 | Slow diag points at large N and P. | Keep the interval large (FR-021). Measure the cost (MPI-M8). |
 | Snapshot gather at 1M particles (64 MB) | Slow snapshots on a slow network. | Snapshot interval set by the user. Parallel I/O only after measurement. |
 | Input read by every rank (64 MB each at 1M) | Slow start on a shared file system. | Read on rank 0 and broadcast only if the start time is measured as a problem. |
 | MPI and CUDA versions differ on the cluster | Build or run failure. | Record the MPI, CUDA and driver versions with each result. |
@@ -316,7 +318,13 @@ The changes below touch principle V and the Hardware and Toolchain section. They
 Where the code differs from the text above, and why:
 
 1. **Diagnostics (section 4.1).** Each rank runs the potential kernel of the one-process path for its **own sources**, with pairs `j > i` only. It does not sum over all pairs of its own targets. The work of rank r is about `N·n_r − n_r²/2` pairs. This is at most `N²/G` for each rank, so the cost bound of the decision holds. The total work is `N²/2`, not `N²`. The code uses the existing kernel. No new kernel needs a GPU check.
-2. **Diagnostics sums.** Each rank computes 9 Neumaier partials (K, U, P, L and W_diss). `MPI_Allgather` gives all partials to every rank. Each rank adds them in rank order. So every rank has the same `Diagnostics` bits. MPI adds no floating-point value.
+2. **Diagnostics sums (MPI-M1).** The MPI result is bit-identical to one process with the same parts on P devices. Rank h has the role of device h. Both paths call one host function, `diag_sum()` in `src/diag_sum.cpp`:
+   - K, P and L: every rank has the full state from `state()`. Rank 0 computes them over all particles in index order.
+   - U: `MPI_Gather` sends the `phi` row of each rank (N doubles) to rank 0 in rank order. For each particle, rank 0 adds the rows in rank order, as one process adds the device rows. Then it makes one Neumaier sum over the particles.
+   - W_diss: `MPI_Gatherv` sends `wd` to rank 0 in global order. Rank 0 makes the Neumaier sum over the particles.
+   - `MPI_Bcast` copies the 10 result values to all ranks. So every rank has the same `Diagnostics` bits. MPI adds no floating-point value.
+   - Cost: `8·N·P` bytes to rank 0 at each diag point (64 MB at N = 1M and P = 8), plus `8·N` bytes for `wd` when dissipation is on. The test `tests/test_diag_order.cpp` checks the gather layout on the CPU.
+   - MPI-M8 proposes to gather only the positions. For K, P and L this is now superseded: bit-identity needs the velocities of all particles on rank 0, and `state()` gives them.
 3. **Snapshots and `state()` (section 4.2).** `state()` uses `MPI_Allgatherv`, not `MPI_Gatherv` to rank 0. Every rank gets the full set. The diagnostics need all positions on every rank anyway. Cost: `N × 64 B` on every rank for each call. Upgrade path: `MPI_Gatherv` to rank 0, after a measurement.
 4. **Device selection (section 3.3).** One visible device: device 0. Otherwise `(local_rank + device_offset) % count`. The constructor throws when `local_rank >= count`.
 5. **Tests (section 6.1).** No `cpu-mpi` test is in the repository (the task list has no test tasks). A check program outside the repository ran under `mpirun -np 1` to `-np 4`. It checked the rank order of `MPI_Allgatherv`, the row layout of `MPI_Alltoallv`, the bitwise rank-order sum, the `MPI_MIN` flag, `MPI_BOR`, `MPI_MAX`, and `abort_ranks` (all ranks stop, the file is flushed).

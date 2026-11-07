@@ -17,6 +17,7 @@
 #include <utility>
 #include <vector>
 #include "h4nb/h4nb.hpp"
+#include "diag_sum.hpp"
 #include "io.hpp"
 #include "kernels.cuh"
 #ifdef H4NB_HAVE_MPI
@@ -116,17 +117,6 @@ void launch_potential(int tile, dim3 grid, cudaStream_t s, int n, const d4* xall
     potential_kernel<T><<<grid, T, 0, s>>>(n, xall, ns, sbase, chunk, eps2, pphi);
   });
 }
-
-// Neumaier compensated sum (TZ 4.4, 6.1). It reduces round-off error.
-struct NSum {
-  double s = 0, c = 0;
-  void add(double x) {
-    const double t = s + x;
-    c += std::fabs(s) >= std::fabs(x) ? (s - t) + x : (x - t) + s;
-    s = t;
-  }
-  double value() const { return s + c; }
-};
 
 void copy(void* dst, const void* src, size_t bytes, cudaStream_t s) {
   if (bytes) H4_CUDA(cudaMemcpyAsync(dst, src, bytes, cudaMemcpyDefault, s));
@@ -931,7 +921,7 @@ Diagnostics Simulation::diagnostics() {
     for (auto& f : m.d) copy(f.tx + e.base, e.x, size_t(e.n) * sizeof(d4), e.s);
     H4_CUDA(cudaEventRecord(e.ev_tx, e.s));
   }
-  std::vector<std::vector<double>> ph(size_t(G), std::vector<double>(size_t(m.N)));
+  std::vector<double> ph(size_t(G) * size_t(m.N));  // Row h (device h) at h * N. The layout of diag_sum().
   for (int h = 0; h < G; ++h) {
     Dev& e = m.d[size_t(h)];
     Impl::use(e);
@@ -944,7 +934,7 @@ Diagnostics Simulation::diagnostics() {
     check_launch(m.debug_sync, e.s, "potential_kernel");
     sum_phi<<<blocks(m.N, 256), 256, 0, e.s>>>(m.N, sp.nj, pp, e.phi);
     check_launch(m.debug_sync, e.s, "sum_phi");
-    H4_CUDA(cudaMemcpyAsync(ph[size_t(h)].data(), e.phi, size_t(m.N) * sizeof(double), cudaMemcpyDeviceToHost, e.s));
+    H4_CUDA(cudaMemcpyAsync(ph.data() + size_t(h) * size_t(m.N), e.phi, size_t(m.N) * sizeof(double), cudaMemcpyDeviceToHost, e.s));
   }
   m.sync();
   H4_CUDA(cudaGetLastError());
@@ -954,45 +944,22 @@ Diagnostics Simulation::diagnostics() {
       Impl::use(e);
       H4_CUDA(cudaMemcpy(wd.data() + e.base, e.wd, size_t(e.n) * sizeof(double), cudaMemcpyDeviceToHost));
     }
-  NSum K, U, P[3], L[3], W;
-  for (size_t i = 0; i < p.size(); ++i) {
-    double phi = 0;
-    for (int h = 0; h < G; ++h) phi += ph[size_t(h)][i];
-    const double mi = p.m[i];
-    U.add(mi * phi);
-    K.add(0.5 * mi * (p.vx[i] * p.vx[i] + p.vy[i] * p.vy[i] + p.vz[i] * p.vz[i]));
-    P[0].add(mi * p.vx[i]); P[1].add(mi * p.vy[i]); P[2].add(mi * p.vz[i]);
-    L[0].add(mi * (p.y[i] * p.vz[i] - p.z[i] * p.vy[i]));
-    L[1].add(mi * (p.z[i] * p.vx[i] - p.x[i] * p.vz[i]));
-    L[2].add(mi * (p.x[i] * p.vy[i] - p.y[i] * p.vx[i]));
-    W.add(wd[i]);
-  }
-  Diagnostics r;
+  Diagnostics r = diag_sum(p, ph.data(), G, wd.data(), m.c.G);
   r.time = time();
-  r.K = K.value();
-  r.U = -m.c.G * U.value();
-  r.E = r.K + r.U;
-  r.W_diss = W.value();
-  for (int k = 0; k < 3; ++k) {
-    r.P[k] = P[k].value();
-    r.L[k] = L[k].value();
-  }
   fm.ok = true;
   return r;
 }
 
 #ifdef H4NB_HAVE_MPI
-// Diagnostics on several ranks (task T033, docs/multi-node-design.md section 4.1).
-// 1. state() gives every rank all positions (MPI_Allgatherv). Each rank uploads them to tx in global order.
-// 2. Each rank runs the potential kernel of the one-process path for its own sources: phi_r(i) is the sum over the
-//    sources j > i of this rank. The work of rank r is about N * n_r - n_r^2 / 2 pairs, at most N^2 / P pairs.
-//    This is within the bound of the design (N^2 / P for each rank), with the same kernel as one process.
-// 3. Each rank computes Neumaier partial sums in index order: U_r = sum_i m_i phi_r(i) over all i, and K, P, L
-//    and W_diss over its own particles.
-// 4. MPI_Allgather gives every rank the 9 partials of all ranks. Each rank adds them in rank order (Neumaier).
-//    Thus all ranks get the same bits, and the sum order is fixed. MPI does not add the values.
-// The values differ from the one-process values in the last bits, because the sum order differs
-// (docs/multi-node-design.md section 2.3: tolerance 1e-12).
+// Diagnostics on several ranks (task T033, docs/multi-node-design.md section 4.1, MPI-M1).
+// The result has the same bits as one process with the same parts on devices {0, ..., P-1}: rank h plays device h.
+// 1. state_mpi() gives every rank all positions and velocities (MPI_Allgatherv). Each rank uploads them to tx.
+// 2. Each rank runs the potential kernel of the one-process path for its own sources: row phi_r(i) is the sum over
+//    the sources j > i of this rank, for all i. The kernel and the split are the same as for device r of one process.
+// 3. MPI_Gather sends the rows to rank 0 in rank order (N doubles from each rank). MPI_Gatherv sends wd in global
+//    order. Rank 0 calls diag_sum(), the host function of the one-process path. MPI does not add the values.
+// 4. MPI_Bcast copies the result from rank 0 to all ranks. Thus all ranks get the same bits.
+// ponytail: 8 * N * P bytes to rank 0 at each diag point. Upgrade: a GPU reduction of the rows in rank order.
 Particles Simulation::Impl::state_mpi() {
   sync();
   const Dev& e = d[0];
@@ -1036,36 +1003,25 @@ Diagnostics Simulation::Impl::diagnostics_mpi() {
     H4_CUDA(cudaMemcpyAsync(wd.data(), e.wd, size_t(e.n) * sizeof(double), cudaMemcpyDeviceToHost, e.s));
   H4_CUDA(cudaStreamSynchronize(e.s));
   H4_CUDA(cudaGetLastError());
-  NSum K, U, P[3], L[3], W;
-  for (size_t i = 0; i < NN; ++i) U.add(p.m[i] * ph[i]);
-  for (int k = 0; k < e.n; ++k) {
-    const size_t i = size_t(e.base + k);
-    const double mi = p.m[i];
-    K.add(0.5 * mi * (p.vx[i] * p.vx[i] + p.vy[i] * p.vy[i] + p.vz[i] * p.vz[i]));
-    P[0].add(mi * p.vx[i]); P[1].add(mi * p.vy[i]); P[2].add(mi * p.vz[i]);
-    L[0].add(mi * (p.y[i] * p.vz[i] - p.z[i] * p.vy[i]));
-    L[1].add(mi * (p.z[i] * p.vx[i] - p.x[i] * p.vz[i]));
-    L[2].add(mi * (p.x[i] * p.vy[i] - p.y[i] * p.vx[i]));
-    W.add(wd[size_t(k)]);
+  // All ranks call the same collectives in the same order. Only rank 0 needs the receive buffers.
+  const bool root = comm::rank() == 0;
+  std::vector<double> rows(root ? size_t(m.P) * NN : 0), wall(root ? NN : 0, 0.0);
+  comm::gather_double(ph.data(), m.N, rows.data());
+  if (m.c.dissipation != Dissipation::Off)  // The same on all ranks. Off: wd is 0, as in one process.
+    comm::gatherv_double(wd.data(), e.n, wall.data(), m.pn.data(), m.pbase.data());
+  constexpr int kOut = 10;  // K, U, E, P[3], L[3], W_diss.
+  double out[kOut] = {};
+  if (root) {
+    const Diagnostics q = diag_sum(p, rows.data(), m.P, wall.data(), m.c.G);
+    const double v[kOut] = {q.K, q.U, q.E, q.P[0], q.P[1], q.P[2], q.L[0], q.L[1], q.L[2], q.W_diss};
+    std::copy(v, v + kOut, out);
   }
-  constexpr int kParts = 9;  // K, U, P[3], L[3], W.
-  const double mine[kParts] = {K.value(), U.value(), P[0].value(), P[1].value(), P[2].value(),
-                               L[0].value(), L[1].value(), L[2].value(), W.value()};
-  std::vector<double> all(size_t(kParts) * size_t(m.P));
-  comm::allgather_double(mine, kParts, all.data());
-  NSum tot[kParts];
-  for (int h = 0; h < m.P; ++h)  // Rank order.
-    for (int q = 0; q < kParts; ++q) tot[q].add(all[size_t(h) * kParts + size_t(q)]);
+  comm::bcast_double(out, kOut);
   Diagnostics r;
   r.time = double(m.T) * m.tick;
-  r.K = tot[0].value();
-  r.U = -m.c.G * tot[1].value();
-  r.E = r.K + r.U;
-  for (int k = 0; k < 3; ++k) {
-    r.P[k] = tot[2 + k].value();
-    r.L[k] = tot[5 + k].value();
-  }
-  r.W_diss = tot[8].value();
+  r.K = out[0]; r.U = out[1]; r.E = out[2];
+  for (int k = 0; k < 3; ++k) r.P[k] = out[3 + k], r.L[k] = out[6 + k];
+  r.W_diss = out[9];
   return r;
 }
 #endif

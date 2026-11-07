@@ -30,7 +30,10 @@ int max_int(int v);                // MPI_MAX.
 unsigned bor(unsigned v);          // MPI_BOR.
 double min_double(double v);       // MPI_MIN. Exact and independent of the order.
 void allgather_int(int v, int* out);                                      // out has size() entries.
-void allgather_double(const double* in, int n, double* out);              // out has n * size() entries, rank order.
+void gather_double(const double* in, int n, double* out);  // To rank 0. out: n * size() entries, rank order. Rank 0 only.
+// To rank 0. Rank r sends n doubles. They arrive at out + displs[r]. out, counts and displs are used on rank 0 only.
+void gatherv_double(const double* in, int n, double* out, const int* counts, const int* displs);
+void bcast_double(double* buf, int n);  // From rank 0. A copy.
 // In place: the block of this rank is already at buf + displs[rank()]. The other blocks arrive at their displacements.
 // d4 is 4 doubles (32 bytes). buf can be device memory only with a CUDA-aware MPI library.
 void allgatherv_d4(void* buf, const int* counts, const int* displs);
