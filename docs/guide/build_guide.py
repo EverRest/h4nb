@@ -36,7 +36,7 @@ RUN = """
 build/h4nb_mkdisk n=127999 frac=0.1 out=disk128k.snap     # prints mean / median / mass-weighted period
 build/h4nb_run ic=disk128k.snap out=run128k t_end=6.3125 diag=0.0625 eta=0.0005 devices=0,1
 build/h4nb_order e=0.5                                     # Kepler orbit + 4th-order check
-build/h4nb_bench n=16384,131072,1024000 devices=0,1        # speed table
+build/h4nb_bench sizes=16384,131072,1024000 tiles=64,128,256 bpsm=2,4,8 devices=0,1   # bench/bench.dat
 build/h4nb_study ic=disk128k.snap out=study diag=0.0625 etas=0.001,0.0005,0.00025 devices=0,1   # eta study
 tools/h4nb_pack.sh run128k study                            # pack logs + results -> h4nb_logs_<host>_<time>.tar.gz
 """
@@ -80,9 +80,8 @@ AVAIL_KEYS = ["ic", "out", "t_end", "eta", "eta_init", "dt_max", "max_level", "e
               "snap_times", "energy_tol", "perf"]
 AVAIL_DEF = ["—", "—", "—", "0.01", "0.01", "1/64", "40", "0", "block", "0", "0", "0", "dt_max", "0", "-1",
              "0", "0", "0", "mean", "none", "1", "off", "0", "0,0,0", "128", "4", "—", "1e-8", "1"]
-PLANNED = [("tile=64, tile=256", "T017, T018"),
-           ("device_offset, mpi_host_staging", "T030, T032"),
-           ("sizes, tiles, bpsm, fp64_peak", "T019")]
+PLANNED = [
+           ("device_offset, mpi_host_staging", "T030, T032")]
 
 DOCS = [("README.md", "README"), (".specify/memory/constitution.md", "Constitution"),
         ("specs/001-hermite-nbody-lib/spec.md", "Spec"), ("specs/001-hermite-nbody-lib/plan.md", "Plan"),
@@ -130,7 +129,7 @@ T["en"] = dict(
                  "first step factor", "largest step (level 0)", "dt_min = dt_max / 2^max_level", "softening length ε",
                  "block or fixed", "level in fixed mode", "1: centre does not move (tests)", "GPU list, e.g. 0,1",
                  "energy record interval", "snapshot interval (multiple of diag)", "close-pair radius; 0 = off",
-                 "expected particle count (0 = no check)", "ID of record 0 (central body)", "reference period (0 = estimate, needs G = 1)", "mean, median or mass_weighted", "none, agn (ε 0.01), stellar (ε 0.0001)", "gravitational constant", "off or linear_drag: a_diss = −(v − v_bg)/τ, not on particle 0; the verdict uses E − E₀ − W_diss", "drag time τ, > 0 with linear_drag", "background velocity v_bg (3 values)", "targets per block (only 128 now)", "1 to 16", "explicit snapshot times", "energy verdict threshold", "0: no performance.dat"],
+                 "expected particle count (0 = no check)", "ID of record 0 (central body)", "reference period (0 = estimate, needs G = 1)", "mean, median or mass_weighted", "none, agn (ε 0.01), stellar (ε 0.0001)", "gravitational constant", "off or linear_drag: a_diss = −(v − v_bg)/τ, not on particle 0; the verdict uses E − E₀ − W_diss", "drag time τ, > 0 with linear_drag", "background velocity v_bg (3 values)", "targets per block: 64, 128 or 256", "1 to 16", "explicit snapshot times", "energy verdict threshold", "0: no performance.dat"],
     cfg_sources="✅ Five sources. A later source wins:",
     cfg_src_list="<ol><li>default</li><li><code>preset=none|agn|stellar</code></li><li><code>config=&lt;file&gt;</code> (key=value lines)</li><li>environment <code>H4NB_&lt;KEY&gt;</code></li><li>command line</li></ol><p>An unknown key or a bad value is an error (exit code 2). Each run writes <code>config.used</code>. <code>help=1</code> prints all keys.</p>",
     cfg_planned_head=["🚧 Still planned", "Task"],
@@ -140,13 +139,13 @@ T["en"] = dict(
             ["max_level", "Raise it if you see the warning dt &lt; dt_min."],
             ["eps", "0 for point masses; preset=agn or preset=stellar for the two model types."],
             ["diag", "One energy check costs N²/2 pairs. At 1M use T/16 or more."],
-            ["tile, blocks_per_sm 🚧", "Measure with h4nb_bench; keep the best values in the machine config."],
+            ["tile, blocks_per_sm", "Measure with h4nb_bench; keep the best values in the machine config."],
             ["GPUs / nodes", "Set by the launcher (devices=, mpirun, srun). The cluster size is not fixed in the code."]],
     s_cheat="6. Cheat sheet",
     cheat_cfg="Config file ✅", cheat_runcfg="Run with a config file ✅", cheat_mpi="Several nodes 🚧", cheat_cpp="C++ ✅",
     cheat_out="Output files ✅",
     out=[["energy.dat", "time K U E rel_err max_rel_err mean_rel_err W_diss"], ["energy_periods.dat", "period t_start t_end max_rel_err mean_rel_err complete"], ["study/study.dat", "eta dt_max t_end max_rel_err ... pair_evals wall_s pass"], ["momentum.dat", "time Px Py Pz Lx Ly Lz dP_rel dL_rel"],
-         ["timesteps.dat", "time dt_min dt_max dt_mean mean_active r_min"], ["performance.dat", "time wall_s block_steps active pairs_per_s"],
+         ["timesteps.dat", "time dt_min dt_max dt_mean mean_active r_min"], ["performance.dat", "time wall_s block_steps active pairs_per_s"], ["bench/bench.dat", "N devices tile blocks_per_sm pairs_per_s gflops wall_s [pct_peak]"],
          ["snap_NNNNNN.snap", "binary: header + id m x y z vx vy vz"], ["config.used, run_info.txt", "configuration; commit, CUDA, GPUs, host, command"]],
     s_problems="7. Common problems",
     prob_head=["Symptom", "Cause", "Action"],
@@ -203,7 +202,7 @@ T["it"] = dict(
                  "fattore del primo passo", "passo massimo (livello 0)", "dt_min = dt_max / 2^max_level", "lunghezza di softening ε",
                  "block o fixed", "livello in modalità fixed", "1: il centro non si muove (test)", "elenco GPU, es. 0,1",
                  "intervallo dei record di energia", "intervallo degli snapshot (multiplo di diag)", "raggio coppie vicine; 0 = spento",
-                 "numero atteso di particelle (0 = nessun controllo)", "ID del record 0 (corpo centrale)", "periodo di riferimento (0 = stima, richiede G = 1)", "mean, median o mass_weighted", "none, agn (ε 0.01), stellar (ε 0.0001)", "costante gravitazionale", "off o linear_drag: a_diss = −(v − v_bg)/τ, non sulla particella 0; il verdetto usa E − E₀ − W_diss", "tempo di attrito τ, > 0 con linear_drag", "velocità di fondo v_bg (3 valori)", "target per blocco (per ora solo 128)", "da 1 a 16", "tempi espliciti degli snapshot", "soglia del verdetto sull'energia", "0: niente performance.dat"],
+                 "numero atteso di particelle (0 = nessun controllo)", "ID del record 0 (corpo centrale)", "periodo di riferimento (0 = stima, richiede G = 1)", "mean, median o mass_weighted", "none, agn (ε 0.01), stellar (ε 0.0001)", "costante gravitazionale", "off o linear_drag: a_diss = −(v − v_bg)/τ, non sulla particella 0; il verdetto usa E − E₀ − W_diss", "tempo di attrito τ, > 0 con linear_drag", "velocità di fondo v_bg (3 valori)", "target per blocco: 64, 128 o 256", "da 1 a 16", "tempi espliciti degli snapshot", "soglia del verdetto sull'energia", "0: niente performance.dat"],
     cfg_sources="✅ Cinque sorgenti. Vince la sorgente successiva:",
     cfg_src_list="<ol><li>valore predefinito</li><li><code>preset=none|agn|stellar</code></li><li><code>config=&lt;file&gt;</code> (righe key=value)</li><li>variabili d'ambiente <code>H4NB_&lt;KEY&gt;</code></li><li>riga di comando</li></ol><p>Una chiave sconosciuta o un valore errato è un errore (codice di uscita 2). Ogni esecuzione scrive <code>config.used</code>. <code>help=1</code> stampa tutte le chiavi.</p>",
     cfg_planned_head=["🚧 Ancora previsto", "Task"],
@@ -213,7 +212,7 @@ T["it"] = dict(
             ["max_level", "Aumentarlo se compare l'avviso dt &lt; dt_min."],
             ["eps", "0 per masse puntiformi; preset=agn o preset=stellar per i due tipi di modello."],
             ["diag", "Un controllo dell'energia costa N²/2 coppie. Con 1M usare T/16 o più."],
-            ["tile, blocks_per_sm 🚧", "Misurarli con h4nb_bench; salvare i valori migliori nella config della macchina."],
+            ["tile, blocks_per_sm", "Misurarli con h4nb_bench; salvare i valori migliori nella config della macchina."],
             ["GPU / nodi", "Li imposta il launcher (devices=, mpirun, srun). La dimensione del cluster non è fissata nel codice."]],
     s_cheat="6. Promemoria",
     cheat_cfg="File di configurazione ✅", cheat_runcfg="Esecuzione con file di configurazione ✅", cheat_mpi="Più nodi 🚧", cheat_cpp="C++ ✅",
@@ -274,7 +273,7 @@ T["uk"] = dict(
                  "множник першого кроку", "найбільший крок (рівень 0)", "dt_min = dt_max / 2^max_level", "довжина softening ε",
                  "block або fixed", "рівень у режимі fixed", "1: центр нерухомий (тести)", "список GPU, напр. 0,1",
                  "інтервал записів енергії", "інтервал знімків (кратний diag)", "радіус близьких пар; 0 = вимкнено",
-                 "очікувана кількість частинок (0 = без перевірки)", "ID запису 0 (центральне тіло)", "опорний період (0 = оцінка, потрібно G = 1)", "mean, median або mass_weighted", "none, agn (ε 0.01), stellar (ε 0.0001)", "гравітаційна стала", "off або linear_drag: a_diss = −(v − v_bg)/τ, крім частинки 0; вердикт використовує E − E₀ − W_diss", "час гальмування τ, > 0 з linear_drag", "фонова швидкість v_bg (3 значення)", "цілей на блок (поки лише 128)", "від 1 до 16", "явні часи знімків", "поріг вердикту енергії", "0: без performance.dat"],
+                 "очікувана кількість частинок (0 = без перевірки)", "ID запису 0 (центральне тіло)", "опорний період (0 = оцінка, потрібно G = 1)", "mean, median або mass_weighted", "none, agn (ε 0.01), stellar (ε 0.0001)", "гравітаційна стала", "off або linear_drag: a_diss = −(v − v_bg)/τ, крім частинки 0; вердикт використовує E − E₀ − W_diss", "час гальмування τ, > 0 з linear_drag", "фонова швидкість v_bg (3 значення)", "цілей на блок: 64, 128 або 256", "від 1 до 16", "явні часи знімків", "поріг вердикту енергії", "0: без performance.dat"],
     cfg_sources="✅ П'ять джерел. Пізніше джерело перемагає:",
     cfg_src_list="<ol><li>значення за замовчуванням</li><li><code>preset=none|agn|stellar</code></li><li><code>config=&lt;file&gt;</code> (рядки key=value)</li><li>змінні середовища <code>H4NB_&lt;KEY&gt;</code></li><li>командний рядок</li></ol><p>Невідомий ключ або хибне значення — це помилка (код виходу 2). Кожен запуск записує <code>config.used</code>. <code>help=1</code> друкує всі ключі.</p>",
     cfg_planned_head=["🚧 Ще заплановано", "Задача"],
@@ -284,7 +283,7 @@ T["uk"] = dict(
             ["max_level", "Збільште, якщо бачите попередження dt &lt; dt_min."],
             ["eps", "0 для точкових мас; preset=agn або preset=stellar для двох типів моделей."],
             ["diag", "Одна перевірка енергії коштує N²/2 пар. Для 1M беріть T/16 або більше."],
-            ["tile, blocks_per_sm 🚧", "Виміряйте через h4nb_bench; збережіть найкращі значення в конфігу машини."],
+            ["tile, blocks_per_sm", "Виміряйте через h4nb_bench; збережіть найкращі значення в конфігу машини."],
             ["GPU / вузли", "Задає лаунчер (devices=, mpirun, srun). Розмір кластера в коді не зафіксовано."]],
     s_cheat="6. Шпаргалка",
     cheat_cfg="Файл конфігурації ✅", cheat_runcfg="Запуск з файлом конфігурації ✅", cheat_mpi="Кілька вузлів 🚧", cheat_cpp="C++ ✅",

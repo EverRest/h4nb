@@ -23,7 +23,7 @@ static bool bitwise_equal(const h4nb::Particles& a, const h4nb::Particles& b) {
 }
 
 int main() {
-  // N = 777: not a multiple of BI, several tiles, j-split nj > 1. dt_max = 0.5 gives levels 2..5.
+  // N = 777: not a multiple of any tile, several tiles, j-split nj > 1. dt_max = 0.5 gives levels 2..5.
   const h4nb::Particles p = make_disk(776, 0.1, 1.0, 2.0, 42);
   int ndev = 0;
   CHECK(cudaGetDeviceCount(&ndev) == cudaSuccess && ndev >= 1);
@@ -40,18 +40,20 @@ int main() {
     c.fixed_level = 5;
     ref::Ref r(p, c);
     r.advance_to(2.0);
-    for (const auto& devs : sets) {
-      c.devices = devs;
-      h4nb::Simulation s(p, c);
-      s.advance_to(2.0);
-      const double d = max_diff(s.state(), r.state());
-      std::printf("mode=%d devices=%zu: max|gpu-ref|=%.2e block_steps=%lld\n", int(mode), devs.size(), d,
-                  (long long)s.stats().block_steps);
-      CHECK(d <= 1e-10);
-      CHECK(s.levels() == r.levels());
-      CHECK(s.status() == 0);
-      CHECK_NEAR(s.time(), 2.0, 0.0);
-    }
+    for (int tile : {64, 128, 256})  // Each tile has its own kernel instance and its own j-split.
+      for (const auto& devs : sets) {
+        c.tile = tile;
+        c.devices = devs;
+        h4nb::Simulation s(p, c);
+        s.advance_to(2.0);
+        const double d = max_diff(s.state(), r.state());
+        std::printf("mode=%d tile=%d devices=%zu: max|gpu-ref|=%.2e block_steps=%lld\n", int(mode), tile,
+                    devs.size(), d, (long long)s.stats().block_steps);
+        CHECK(d <= 1e-10);
+        CHECK(s.levels() == r.levels());
+        CHECK(s.status() == 0);
+        CHECK_NEAR(s.time(), 2.0, 0.0);
+      }
   }
 
   // Determinism (constitution IV): the same input and devices give the same bits, twice.

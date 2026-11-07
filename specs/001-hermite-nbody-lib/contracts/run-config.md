@@ -109,9 +109,13 @@ A preset sets defaults only. A file, the environment or the command line can cha
 
 | Key | Tool | Type | Default | Meaning |
 |---|---|---|---|---|
-| `sizes` | `h4nb_bench` | int list | `16384,131072,1024000` | Particle counts. (Today the key is `n`.) |
-| `tiles` | `h4nb_bench` | int list | `128` | Tile sizes to measure. |
-| `bpsm` | `h4nb_bench` | int list | `4` | `blocks_per_sm` values to measure. |
+| `sizes` | `h4nb_bench` | int list | `16384,131072,1024000` | Particle counts N, central body included. Each value ≥ 2. The old key `n` is not accepted. |
+| `tiles` | `h4nb_bench` | int list | `128` | Tile sizes to measure. Each value is 64, 128 or 256. |
+| `bpsm` | `h4nb_bench` | int list | `4` | `blocks_per_sm` values to measure. Each value is 1 to 16. |
+| `fp64_peak` | `h4nb_bench` | real | 0 | FP64 peak of all devices in TFLOP/s. 0: not set. When > 0, `bench.dat` has the column `pct_peak`. |
+| `segments` | `h4nb_bench` | int | 1 | Block-step time after each force pass, in units of `dt_max` = 1/16. The block-step rate is in the output only. 0: no block steps. |
+| `seed` | `h4nb_bench` | int | 1 | Seed of the disk initial conditions. |
+| `out` | `h4nb_bench` | string | `bench` | Output directory for `bench.dat`, `config.used` and `run_info.txt`. |
 | `etas` | `h4nb_study` | real list | `0.002,0.001,0.0005,0.00025` | η grid. |
 | `dt_maxes` | `h4nb_study` | real list | `0.015625` | `dt_max` grid. |
 | `t_ends` | `h4nb_study` | real list | `period` | Duration grid. |

@@ -29,12 +29,37 @@ struct IsActive {
 };
 
 // Split the sources (j) so that a launch has about bpsm blocks per SM (Config::blocks_per_sm).
-// This holds even when few targets are active.
+// This holds even when few targets are active. tile is Config::tile. chunk is a multiple of tile.
+// A different tile or bpsm gives a different chunk. This changes the grouping of the partial sums (constitution IV).
+// The rows hold na * nj <= na + bpsm * sms * tile entries:
+// nj <= ceil(bpsm * sms / b) with b = ceil(na / tile), and na <= b * tile. The final nj = ceil(ns / chunk) is not larger.
 struct Split { int nj, chunk; };
-Split split(int na, int ns, int sms, int bpsm) {
-  const int nj = std::max(1, std::min(blocks(bpsm * sms, blocks(na, BI)), blocks(ns, BI)));
-  const int chunk = blocks(blocks(ns, nj), BI) * BI;
+Split split(int na, int ns, int sms, int bpsm, int tile) {
+  const int nj = std::max(1, std::min(blocks(bpsm * sms, blocks(na, tile)), blocks(ns, tile)));
+  const int chunk = blocks(blocks(ns, nj), tile) * tile;
   return {blocks(ns, chunk), chunk};
+}
+
+// Launch the force_kernel instance for tile. validate() accepts only 64, 128 and 256.
+void launch_force(int tile, dim3 grid, cudaStream_t s, int na, const d4* tx, const d4* tv, const int* tid, int ns,
+                  const d4* sx, const d4* sv, int sbase, int chunk, double eps2, d4* pa, d4* pj) {
+  switch (tile) {
+    case 64: force_kernel<64><<<grid, 64, 0, s>>>(na, tx, tv, tid, ns, sx, sv, sbase, chunk, eps2, pa, pj); break;
+    case 128: force_kernel<128><<<grid, 128, 0, s>>>(na, tx, tv, tid, ns, sx, sv, sbase, chunk, eps2, pa, pj); break;
+    case 256: force_kernel<256><<<grid, 256, 0, s>>>(na, tx, tv, tid, ns, sx, sv, sbase, chunk, eps2, pa, pj); break;
+    default: throw std::logic_error("launch_force: tile must be 64, 128 or 256.");
+  }
+}
+
+// Launch the potential_kernel instance for tile. validate() accepts only 64, 128 and 256.
+void launch_potential(int tile, dim3 grid, cudaStream_t s, int n, const d4* xall, int ns, int sbase, int chunk,
+                      double eps2, double* pphi) {
+  switch (tile) {
+    case 64: potential_kernel<64><<<grid, 64, 0, s>>>(n, xall, ns, sbase, chunk, eps2, pphi); break;
+    case 128: potential_kernel<128><<<grid, 128, 0, s>>>(n, xall, ns, sbase, chunk, eps2, pphi); break;
+    case 256: potential_kernel<256><<<grid, 256, 0, s>>>(n, xall, ns, sbase, chunk, eps2, pphi); break;
+    default: throw std::logic_error("launch_potential: tile must be 64, 128 or 256.");
+  }
 }
 
 // Neumaier compensated sum (TZ 4.4, 6.1). It reduces round-off error.
@@ -71,10 +96,6 @@ void validate(const Config& c) {
   if (!std::isfinite(c.r2_close) || !(c.r2_close >= 0)) bad("r2_close must be finite and >= 0.");
   if (c.devices.empty()) bad("devices must not be empty.");
   if (c.tile != 64 && c.tile != 128 && c.tile != 256) bad("tile must be 64, 128 or 256.");
-  // ponytail: the kernels use the compile-time constant BI = 128. So only tile = 128 is accepted.
-  // Upgrade: task T017 makes the kernels templates over the tile size. Then accept 64 and 256 too.
-  if (c.tile != BI)
-    bad("tile: only 128 is supported. The tile templates (task T017) do not exist yet.");
   if (c.blocks_per_sm < 1 || c.blocks_per_sm > 16) bad("blocks_per_sm must be in [1, 16].");
   if (c.dissipation != Dissipation::Off && c.dissipation != Dissipation::LinearDrag)
     bad("dissipation must be Off or LinearDrag.");
@@ -171,7 +192,8 @@ struct Simulation::Impl {
       e.status = e.alloc<unsigned>(1);
       e.minr2 = e.alloc<unsigned long long>(1);
       e.tx = e.alloc<d4>(NN); e.tv = e.alloc<d4>(NN); e.tid = e.alloc<int>(NN);
-      e.pcap = NN + size_t(c.blocks_per_sm) * size_t(e.sms) * BI;  // At least na * nj for every split. See split().
+      // At least na * nj for every split with na <= N. See split().
+      e.pcap = NN + size_t(c.blocks_per_sm) * size_t(e.sms) * size_t(c.tile);
       e.pa = e.alloc<d4>(e.pcap); e.pj = e.alloc<d4>(e.pcap);
       e.fa = e.alloc<d4>(NN); e.fj = e.alloc<d4>(NN);
       e.ra = e.alloc<d4>(size_t(G) * nn); e.rj = e.alloc<d4>(size_t(G) * nn);
@@ -289,9 +311,9 @@ struct Simulation::Impl {
       use(e);
       for (int g = 0; g < G; ++g)
         if (g != h) H4_CUDA(cudaStreamWaitEvent(e.s, d[size_t(g)].ev_tx, 0));
-      const Split sp = split(NA, e.n, e.sms, c.blocks_per_sm);
-      force_kernel<<<dim3(unsigned(blocks(NA, BI)), unsigned(sp.nj)), BI, 0, e.s>>>(
-          NA, e.tx, e.tv, e.tid, e.n, e.xp, e.vp, e.base, sp.chunk, c.eps2, e.pa, e.pj);
+      const Split sp = split(NA, e.n, e.sms, c.blocks_per_sm, c.tile);
+      launch_force(c.tile, dim3(unsigned(blocks(NA, c.tile)), unsigned(sp.nj)), e.s, NA, e.tx, e.tv, e.tid, e.n, e.xp,
+                   e.vp, e.base, sp.chunk, c.eps2, e.pa, e.pj);
       sum_partials<<<blocks(NA, 256), 256, 0, e.s>>>(NA, sp.nj, e.pa, e.pj, e.fa, e.fj);
       for (int g = 0; g < G; ++g) {
         const size_t m = size_t(na[size_t(g)]), row = size_t(h) * m;
@@ -425,10 +447,10 @@ Diagnostics Simulation::diagnostics() {
     Impl::use(e);
     for (int g = 0; g < G; ++g)
       if (g != h) H4_CUDA(cudaStreamWaitEvent(e.s, m.d[size_t(g)].ev_tx, 0));
-    const Split sp = split(m.N, e.n, e.sms, m.c.blocks_per_sm);
+    const Split sp = split(m.N, e.n, e.sms, m.c.blocks_per_sm, m.c.tile);
     double* pp = reinterpret_cast<double*>(e.pa);  // N * nj doubles fit in pcap d4 entries.
-    potential_kernel<<<dim3(unsigned(blocks(m.N, BI)), unsigned(sp.nj)), BI, 0, e.s>>>(m.N, e.tx, e.n, e.base,
-                                                                                        sp.chunk, m.c.eps2, pp);
+    launch_potential(m.c.tile, dim3(unsigned(blocks(m.N, m.c.tile)), unsigned(sp.nj)), e.s, m.N, e.tx, e.n, e.base,
+                     sp.chunk, m.c.eps2, pp);
     sum_phi<<<blocks(m.N, 256), 256, 0, e.s>>>(m.N, sp.nj, pp, e.phi);
     H4_CUDA(cudaMemcpyAsync(ph[size_t(h)].data(), e.phi, size_t(m.N) * sizeof(double), cudaMemcpyDeviceToHost, e.s));
   }

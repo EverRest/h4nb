@@ -21,12 +21,13 @@ __global__ void gather_kernel(int na, const int* __restrict__ act, const d4* __r
   tid[k] = base + i;
 }
 
+template <int TILE>
 __global__ void force_kernel(int na, const d4* __restrict__ tx, const d4* __restrict__ tv,
                              const int* __restrict__ tid, int ns, const d4* __restrict__ sx,
                              const d4* __restrict__ sv, int sbase, int chunk, double eps2, d4* __restrict__ pa,
                              d4* __restrict__ pj) {
-  __shared__ d4 shx[BI], shv[BI];
-  const int i = blockIdx.x * BI + threadIdx.x;
+  __shared__ d4 shx[TILE], shv[TILE];
+  const int i = blockIdx.x * TILE + threadIdx.x;
   const int j0 = blockIdx.y * chunk, j1 = min(ns, j0 + chunk);
   d4 xi{0, 0, 0, 0}, vi{0, 0, 0, 0};
   int gi = -1;
@@ -36,14 +37,14 @@ __global__ void force_kernel(int na, const d4* __restrict__ tx, const d4* __rest
     gi = tid[i];
   }
   AJ f;
-  for (int t0 = j0; t0 < j1; t0 += BI) {
+  for (int t0 = j0; t0 < j1; t0 += TILE) {
     const int js = t0 + threadIdx.x;
     if (js < j1) {
       shx[threadIdx.x] = sx[js];
       shv[threadIdx.x] = sv[js];
     }
     __syncthreads();
-    const int nt = min(BI, j1 - t0);
+    const int nt = min(TILE, j1 - t0);
 #pragma unroll 4
     for (int k = 0; k < nt; ++k)
       if (sbase + t0 + k != gi) accumulate(f, xi, vi, shx[k], shv[k], eps2);
@@ -55,6 +56,12 @@ __global__ void force_kernel(int na, const d4* __restrict__ tx, const d4* __rest
     pj[o] = d4{f.jx, f.jy, f.jz, 0.0};
   }
 }
+
+#define H4_FORCE_ARGS int, const d4*, const d4*, const int*, int, const d4*, const d4*, int, int, double, d4*, d4*
+template __global__ void force_kernel<64>(H4_FORCE_ARGS);
+template __global__ void force_kernel<128>(H4_FORCE_ARGS);
+template __global__ void force_kernel<256>(H4_FORCE_ARGS);
+#undef H4_FORCE_ARGS
 
 __global__ void sum_partials(int na, int nparts, const d4* __restrict__ pa, const d4* __restrict__ pj,
                              d4* __restrict__ fa, d4* __restrict__ fj) {
@@ -107,19 +114,20 @@ template __global__ void correct_kernel<Dissipation::Off>(H4_CORRECT_ARGS);
 template __global__ void correct_kernel<Dissipation::LinearDrag>(H4_CORRECT_ARGS);
 #undef H4_CORRECT_ARGS
 
+template <int TILE>
 __global__ void potential_kernel(int n, const d4* __restrict__ xall, int ns, int sbase, int chunk, double eps2,
                                  double* __restrict__ pphi) {
-  __shared__ d4 shx[BI];
-  const int i = blockIdx.x * BI + threadIdx.x;
+  __shared__ d4 shx[TILE];
+  const int i = blockIdx.x * TILE + threadIdx.x;
   const int j0 = blockIdx.y * chunk, j1 = min(ns, j0 + chunk);
   double phi = 0;
-  if (sbase + j1 - 1 > int(blockIdx.x) * BI) {  // The block has at least one pair j > i. This holds for the whole block.
+  if (sbase + j1 - 1 > int(blockIdx.x) * TILE) {  // The block has at least one pair j > i. This holds for the whole block.
     const d4 xi = i < n ? xall[i] : d4{0, 0, 0, 0};
-    for (int t0 = j0; t0 < j1; t0 += BI) {
+    for (int t0 = j0; t0 < j1; t0 += TILE) {
       const int js = t0 + threadIdx.x;
       if (js < j1) shx[threadIdx.x] = xall[sbase + js];
       __syncthreads();
-      const int nt = min(BI, j1 - t0);
+      const int nt = min(TILE, j1 - t0);
       for (int k = 0; k < nt; ++k) {
         if (sbase + t0 + k > i) {
           const double dx = shx[k].x - xi.x, dy = shx[k].y - xi.y, dz = shx[k].z - xi.z;
@@ -131,6 +139,12 @@ __global__ void potential_kernel(int n, const d4* __restrict__ xall, int ns, int
   }
   if (i < n) pphi[size_t(blockIdx.y) * n + i] = phi;
 }
+
+#define H4_POT_ARGS int, const d4*, int, int, int, double, double*
+template __global__ void potential_kernel<64>(H4_POT_ARGS);
+template __global__ void potential_kernel<128>(H4_POT_ARGS);
+template __global__ void potential_kernel<256>(H4_POT_ARGS);
+#undef H4_POT_ARGS
 
 __global__ void sum_phi(int n, int nparts, const double* __restrict__ pphi, double* __restrict__ phi) {
   const int i = blockIdx.x * blockDim.x + threadIdx.x;

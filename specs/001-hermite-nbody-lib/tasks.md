@@ -46,7 +46,7 @@ description: "Task list for h4nb: configuration, speed, multi-node scale and inp
 - [x] T010 [P] In `src/io.cpp`, make `load_text` and `read_snapshot` reject a repeated ID, m ≤ 0, a non-finite value and N < 2. Name the file, the line or index, and the field (research R5).
 - [x] T011 Move `tools/h4nb_run.cpp` to `settings.hpp`. Add the keys `n`, `central_id`, `period`, `period_kind`, `dissipation`, `drag_tau`, `drag_vbg`, `snap_times`, `energy_tol`, `perf`, `tile`, `blocks_per_sm`. Reject `t_end`, `diag` and snapshot times that are not multiples of `dt_max`. Write `config.used` in the output directory.
 - [x] T012 [P] Move `tools/h4nb_mkdisk.cpp` and `tools/h4nb_order.cpp` to `settings.hpp`. Keep the current key names and defaults.
-- [ ] T013 Delete `tools/args.hpp` when no tool includes it. (Deletion needs Pavlo's permission on the device.)
+- [x] T013 Delete `tools/args.hpp` when no tool includes it. (Deletion needs Pavlo's permission on the device.) Done with T019: no file includes it.
 
 **Checkpoint**: every tool reads defaults, presets, files, environment and command line in the same way. Each run writes `config.used`.
 
@@ -72,9 +72,9 @@ description: "Task list for h4nb: configuration, speed, multi-node scale and inp
 
 **Independent check**: `h4nb_bench sizes=131072,1024000 tiles=64,128,256 bpsm=2,4,8` writes `bench.dat` with one row for each combination.
 
-- [ ] T017 [US4] In `src/kernels.cuh` and `src/kernels.cu`, make `force_kernel` and `potential_kernel` templates over the tile size. Instantiate 64, 128 and 256. Keep the arithmetic and the order of the sums unchanged.
-- [ ] T018 [US4] In `src/simulation.cu`, dispatch the kernel instance from `Config::tile`. Use `Config::blocks_per_sm` in `split()` in place of the constant 4. Compute `pcap` from both values. With the defaults, the results must stay bit-identical to commit `339ce35`.
-- [ ] T019 [US4] Move `tools/h4nb_bench.cpp` to `settings.hpp`. Add `sizes`, `tiles`, `bpsm` and an optional `fp64_peak` (TFLOP/s). Write `bench.dat` with `N devices tile blocks_per_sm pairs_per_s gflops wall_s` and the percent of peak when `fp64_peak` is set.
+- [x] T017 [US4] In `src/kernels.cuh` and `src/kernels.cu`, make `force_kernel` and `potential_kernel` templates over the tile size. Instantiate 64, 128 and 256. Keep the arithmetic and the order of the sums unchanged.
+- [x] T018 [US4] In `src/simulation.cu`, dispatch the kernel instance from `Config::tile`. Use `Config::blocks_per_sm` in `split()` in place of the constant 4. Compute `pcap` from both values. With the defaults, the results must stay bit-identical to commit `339ce35`.
+- [x] T019 [US4] Move `tools/h4nb_bench.cpp` to `settings.hpp`. Add `sizes`, `tiles`, `bpsm` and an optional `fp64_peak` (TFLOP/s). Write `bench.dat` with `N devices tile blocks_per_sm pairs_per_s gflops wall_s` and the percent of peak when `fp64_peak` is set.
 - [ ] T020 [US4] Measure the baseline on the RTX 4070 Ti: `h4nb_bench sizes=16384,131072,262144 tiles=64,128,256 bpsm=2,4,8 devices=0` and `devices=0,1`. Record the table and `run_info.txt` in `docs/results.md`. Write the best `tile` and `blocks_per_sm` into `configs/dev-4070ti.cfg`.
 - [ ] T021 [US4] Do T020 again on one GH200 with `sizes=131072,524288,1024000`. Write the best values into `configs/gh200.cfg`.
 - [ ] T022 [US4] Profile one block-step run of 131 072 particles with `nsys profile` on each machine. Record the share of `predict_kernel`, `DeviceSelect`, the force kernel, the copies and the host syncs. These numbers are the gates of T023 to T025.
@@ -95,7 +95,7 @@ description: "Task list for h4nb: configuration, speed, multi-node scale and inp
 
 - [x] T027 [P] [US6] Add `h4nb::build_info()` to `include/h4nb/h4nb.hpp` and `src/simulation.cu`. Pass the commit and the architectures from CMake as compile definitions.
 - [x] T028 [US6] In `tools/h4nb_run.cpp`, `h4nb_bench.cpp` and `h4nb_study.cpp`, write `run_info.txt` (data-model.md section 8): build info, driver and runtime versions, GPU names and compute capabilities, rank count, host and start time.
-- [x] T044 [US6] Add `tools/h4nb_pack.sh`. It packs the logs and the results of one or more run directories into one `.tar.gz` archive with `MANIFEST.txt` (Pavlo, 2026-11-07). Document it in README.md and quickstart.md.
+- [x] T044 [US6] Add `tools/h4nb_pack.sh`. It packs the logs and the results of one or more run directories into one `.tar.gz` archive with `MANIFEST.txt` (Pavlo, 2026-11-07). Add the Makefile target `make pack RUN="..."`. Document both in README.md and quickstart.md.
 
 ---
 

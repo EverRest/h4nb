@@ -167,7 +167,7 @@ period=6.283185307179586      # reference period 2*pi for M=1, a=1, G=1
 | `fixed_level` | 0 | Level of all particles in `fixed` mode. Not more than `max_level`. |
 | `r_close` | −1 | Close-pair warning radius. −1: `0.1·R_rms/N^(1/3)`. 0: off. |
 | `devices` | `0` | CUDA device list, for example `0,1`. |
-| `tile` | 128 | Targets per block. Only 128 now. 64 and 256 come with T017. |
+| `tile` | 128 | Targets per block in the force and potential kernels: 64, 128 or 256. Measure the best value with `h4nb_bench`. |
 | `blocks_per_sm` | 4 | 1 to 16. Target blocks per SM for the source split. |
 | `diag` | `dt_max` | Interval of the energy and momentum records. |
 | `snap` | 0 | Snapshot interval. 0 and no `snap_times`: only `snap_final.snap`. |
@@ -175,15 +175,13 @@ period=6.283185307179586      # reference period 2*pi for M=1, a=1, G=1
 | `energy_tol` | 1e-8 | Threshold of the energy verdict over the first reference period. |
 | `perf` | 1 | 0: do not write `performance.dat`. |
 
-`h4nb_mkdisk` and `h4nb_order` use the same sources and rules. Their keys did not change. `h4nb_bench` still reads plain `key=value` arguments. T019 moves it to the same system.
+`h4nb_mkdisk`, `h4nb_order` and `h4nb_bench` use the same sources and rules. `h4nb_bench` measures the grid `sizes` × `tiles` × `bpsm` and writes `<out>/bench.dat` (default `out=bench`). Set `fp64_peak` (TFLOP/s) to get the column `pct_peak`. Run `h4nb_bench help=1` for all keys. The old key `n` is gone. Use `sizes`.
 
 Keys that are still planned:
 
 | Keys | Task |
 |---|---|
-| `tile=64` and `tile=256` | T017, T018 |
 | `device_offset`, `mpi_host_staging` (MPI) | T030, T032 |
-| `sizes`, `tiles`, `bpsm`, `fp64_peak` (`h4nb_bench`) | T019 |
 
 The full contract with types, defaults and ranges: [`contracts/run-config.md`](specs/001-hermite-nbody-lib/contracts/run-config.md).
 
@@ -196,7 +194,7 @@ The full contract with types, defaults and ranges: [`contracts/run-config.md`](s
 | `max_level` | Large enough that no particle needs a step below `dt_min`. The warning `dt < dt_min` tells you to raise it. |
 | `eps` | 0 for point masses. `preset=agn` or `preset=stellar` for the two model types. State ε in each report. |
 | `diag` | Each energy check costs N²/2 pairs. At 1M particles, use `T/16` or larger. |
-| `tile`, `blocks_per_sm` 🚧 | Measure with `h4nb_bench tiles=64,128,256 bpsm=2,4,8`. Put the best values in your machine config. |
+| `tile`, `blocks_per_sm` | Measure with `h4nb_bench tiles=64,128,256 bpsm=2,4,8`. Put the best values in your machine config. |
 | GPU count, node count | Set by the launcher (`devices=`, `mpirun -np`, `srun`). The code does not need to know the cluster in advance. |
 
 ## 6. Run
@@ -214,8 +212,8 @@ build/h4nb_run ic=disk128k.snap out=run128k t_end=6.3125 diag=0.0625 eta=0.0005 
 # Kepler check and 4th-order convergence.
 build/h4nb_order e=0.5
 
-# Benchmark.
-build/h4nb_bench n=16384,131072,1024000 devices=0,1
+# Benchmark: one row in bench/bench.dat for each (N, tile, blocks_per_sm). The last lines give the best combination for each N.
+build/h4nb_bench sizes=16384,131072,1024000 tiles=64,128,256 bpsm=2,4,8 devices=0,1 out=bench
 
 # eta study: one integration for each (dt_max, eta), rows for each t_end, in study/study.dat.
 build/h4nb_study ic=disk128k.snap out=study diag=0.0625 etas=0.002,0.001,0.0005,0.00025 \
@@ -256,6 +254,7 @@ mkdir -p run128k
 build/h4nb_run config=configs/agn.cfg ic=disk128k.snap out=run128k t_end=6.3125 2>&1 | tee run128k/stdout.log
 tools/h4nb_pack.sh run128k study                  # -> h4nb_logs_<host>_<UTC time>.tar.gz
 tools/h4nb_pack.sh -o a1.tar.gz --snap run128k    # own name, snapshots included
+make pack RUN="run128k study"                     # the same through make; also OUT=a1.tar.gz and SNAP=1
 ```
 
 - The script packs `config.used`, `run_info.txt`, `*.dat`, `*.log`, `*.out`, `*.err`, `*.txt` and Nsight profiles (`*.nsys-rep`, `*.qdrep`, `*.ncu-rep`, `*.sqlite`) from each directory and its subdirectories.
@@ -298,7 +297,7 @@ Rules:
 - `advance_to(t)` and `diagnostics()` work only at multiples of `dt_max`.
 - `diagnostics()` costs N²/2 pair evaluations. Call it at an interval.
 - `Simulation` is not copyable. One object owns the GPU buffers.
-- ✅ `Config::tile` (only 128 until T017) and `Config::blocks_per_sm`. The constructor checks every `Config` field and throws `std::invalid_argument` with the field name. ✅ `Config::dissipation`, `drag_tau`, `drag_vbg` and `Diagnostics::W_diss` (the work of the drag since t = 0). ✅ `h4nb::build_info()` gives the commit, the build type, the architectures and the CUDA versions. The defaults give the current results bit for bit. See [`contracts/public-api.md`](specs/001-hermite-nbody-lib/contracts/public-api.md).
+- ✅ `Config::tile` (64, 128 or 256) and `Config::blocks_per_sm`. The constructor checks every `Config` field and throws `std::invalid_argument` with the field name. ✅ `Config::dissipation`, `drag_tau`, `drag_vbg` and `Diagnostics::W_diss` (the work of the drag since t = 0). ✅ `h4nb::build_info()` gives the commit, the build type, the architectures and the CUDA versions. The defaults give the current results bit for bit. See [`contracts/public-api.md`](specs/001-hermite-nbody-lib/contracts/public-api.md).
 
 ## 8. Output files
 
@@ -313,7 +312,8 @@ Rules:
 | `performance.dat` | `time wall_s block_steps active pairs_per_s` |
 | `snap_NNNNNN.snap`, `snap_final.snap` | Binary snapshot: header + `id m x y z vx vy vz` arrays |
 | `config.used` | Final configuration: key, value and source of each key |
-| `run_info.txt` | Tool, commit, build type, architectures, nvcc, CUDA runtime and driver, GPUs, ranks, host, start time, command line. `h4nb_study` writes it too, and `h4nb_bench` writes it when you give `out=`. |
+| `run_info.txt` | Tool, commit, build type, architectures, nvcc, CUDA runtime and driver, GPUs, ranks, host, start time, command line. `h4nb_study` and `h4nb_bench` write it too. |
+| `bench.dat` (`h4nb_bench`) | `N devices tile blocks_per_sm pairs_per_s gflops wall_s`, and `pct_peak` when `fp64_peak` > 0. `gflops` uses 60 FP64 FLOP per pair (research.md R6). `wall_s` is the time of the first force pass, upload included. |
 
 At the end, `h4nb_run` prints one line that starts with `energy verdict:`. It is `PASS` or `FAIL` for the maximum relative energy error over the first reference period against `energy_tol`, or `INCOMPLETE` when `t_end` is less than the period. For longer runs the line also gives the maximum over all complete periods and the drift. The exit code is 0 for all three verdicts.
 

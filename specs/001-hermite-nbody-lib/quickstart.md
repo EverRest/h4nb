@@ -43,9 +43,9 @@ Tools: `build/h4nb_run`, `build/h4nb_mkdisk`, `build/h4nb_bench`, `build/h4nb_or
 | A5 | 1M disk | `build/h4nb_mkdisk n=1023999 frac=0.5 out=disk1m.snap`, then `build/h4nb_run ic=disk1m.snap out=run1m t_end=<T> diag=<T/16> eta=<from A3> devices=<all>` | The run ends without NaN. Record the maximum relative energy error and the wall time. | SC-002, US4 |
 | A6 | 1 GPU and 2 GPUs | Run the A3 settings for a small disk (`n=2047`) with `devices=0` and with `devices=0,1`. Compare `energy.dat` and `momentum.dat`. | The results agree within the numerical error. For large N, the step time becomes shorter with more GPUs. | SC-006, US5 |
 | A7 | Reproducibility | Run the same command two times into two directories. Use `cmp` on each `.dat` and `.snap` file. | All files are identical. | SC-007, US6 |
-| A8 | Benchmark | `build/h4nb_bench n=16384,131072,1024000 devices=0`, then run it with all GPUs. | The table has at least three sizes. | SC-009, FR-024 |
+| A8 | Benchmark | `build/h4nb_bench sizes=16384,131072,1024000 devices=0 out=bench1`, then run it with all GPUs (example: `devices=0,1 out=bench2`). | The table and `bench.dat` have at least three sizes. | SC-009, FR-024 |
 | A9 🚧 | Several nodes (T029–T036) | `srun --ntasks-per-node=<GPUs per node> --gpus-per-task=1 --gpu-bind=single:1 build/h4nb_run config=configs/gh200.cfg ic=disk1m.snap out=run_<ranks> t_end=<T> diag=<T/16>`. Run with 1, 2, 4 and 8 ranks, and with 2 ranks on one node and on two nodes. | Two nodes agree with one node within the tolerance of `docs/multi-node-design.md` section 2.3. The time per step falls with more ranks. Record the MPI stack. | SC-006, SC-010, US5 |
-| A10 🚧 | Kernel tuning (T019–T021) | `build/h4nb_bench sizes=131072,1024000 tiles=64,128,256 bpsm=2,4,8 fp64_peak=<TFLOP/s>` | `bench.dat` has one row for each combination. Write the best `tile` and `blocks_per_sm` into the machine config. | FR-025 |
+| A10 | Kernel tuning (T019–T021) | `build/h4nb_bench sizes=131072,1024000 tiles=64,128,256 bpsm=2,4,8 devices=0 fp64_peak=<TFLOP/s> segments=0 out=tune` | `tune/bench.dat` has one row for each combination and the column `pct_peak`. The last lines of the output give the best combination for each N. Write the best `tile` and `blocks_per_sm` into the machine config. | FR-025 |
 
 `<T>` is the agreed mean orbital period from `h4nb_mkdisk`. For the dimensionless units (G = 1, central mass 1, radius 1), the reference Kepler period is 2π ≈ 6.2832. Rounded up to a multiple of 1/64, this is 6.296875. With `diag=<T/16>`, choose `t_end` and `diag` so that `diag` divides `t_end` (example: `t_end=6.3125 diag=0.0625`). Round it up to a multiple of `dt_max` (default 1/64). `diag` and `t_end` must be multiples of `dt_max`.
 
@@ -55,7 +55,7 @@ Do these steps for each acceptance run:
 
 1. Create the output directory before the run: `mkdir -p run128k`.
 2. Save the screen output in it: add `2>&1 | tee run128k/stdout.log` to the command.
-3. After the runs, pack all directories into one archive: `tools/h4nb_pack.sh run3 study run128k run1m`.
+3. After the runs, pack all directories into one archive: `make pack RUN="run3 study run128k run1m"` (or `tools/h4nb_pack.sh run3 study run128k run1m`).
 4. Send the archive `h4nb_logs_<host>_<UTC time>.tar.gz`.
 
 The archive contains `config.used`, `run_info.txt` (commit, CUDA versions, GPUs), all `.dat` files, the logs, the Nsight profiles, the Slurm logs and `MANIFEST.txt` with the `nvidia-smi` output. Snapshots are not in it. Add `--snap` when you also need them, for example for A7.

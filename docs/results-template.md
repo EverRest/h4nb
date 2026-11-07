@@ -20,7 +20,7 @@ Write the measured number. Write the cause that you found.
 
 ## 2. Benchmark (TZ 12, last line)
 
-Run: `build/h4nb_bench n=16384,65536,131072,262144,524288,1024000 devices=0`.
+Run: `build/h4nb_bench sizes=16384,65536,131072,262144,524288,1024000 devices=0`.
 Run it again with `devices=0,1` or with all GPUs.
 
 | N | devices | wall time | GFLOP/s (60 FLOP/pair) | % of FP64 peak |
