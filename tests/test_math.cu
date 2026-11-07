@@ -114,6 +114,46 @@ static void test_update_particle() {
   CHECK(!(update_particle(pc, false, a1, j1, 2.0, x, v, a, j, t, next, lv) & kClosePair));
 }
 
+// update_particle_d with LinearDrag: the status bits come from pass 2, the pass that gives the stored state.
+// A NaN velocity in pass 1 goes into pass 2, so kNaN is not lost.
+static void test_update_particle_d_status() {
+  Config c;
+  c.dt_max = 1.0;
+  c.max_level = 10;
+  c.dissipation = Dissipation::LinearDrag;
+  c.drag_tau = 1.0;
+  const double tick = c.dt_max / 1024.0;
+  const int64_t T = 8;
+  const StepParams p = make_params(c, tick, T, false);
+  const d4 a1{1, 0, 0, 0}, j1{0, 1, 0, 0}, vp{0, 1, 0, 0};
+  const d4 x0{1, 0, 0, 1}, v0{0, 1, 0, 0}, a0{1, 0, 0, 0}, j0{0, 1, 0, 0};
+
+  // The returned status is the status of a plain pass 2 from the saved state.
+  d4 x = x0, v = v0, a = a0, j = j0;
+  int64_t t = 0, next = T;
+  int lv = 7;
+  double wd = 0;
+  const unsigned st = update_particle_d<Dissipation::LinearDrag>(p, false, true, a1, j1, vp, 4.0, x, v, a, j, t, next, lv, wd);
+  d4 xr = x0, vr = v0, ar = a0, jr = j0;
+  int64_t tr = 0, nr = T;
+  int lr = 7;
+  d4 a1r = a1, j1r = j1;
+  dissipation_term<Dissipation::LinearDrag>(p, vp, a1r, j1r);
+  update_particle(p, false, a1r, j1r, 4.0, xr, vr, ar, jr, tr, nr, lr);  // pass 1
+  const d4 v1 = vr;
+  xr = x0; vr = v0; ar = a0; jr = j0; tr = 0; nr = T; lr = 7;
+  a1r = a1; j1r = j1;
+  dissipation_term<Dissipation::LinearDrag>(p, v1, a1r, j1r);
+  const unsigned st2 = update_particle(p, false, a1r, j1r, 4.0, xr, vr, ar, jr, tr, nr, lr);  // pass 2
+  CHECK(st == st2);
+  CHECK(v.x == vr.x && v.y == vr.y && lv == lr);
+
+  // NaN predicted velocity: kNaN reaches the returned status.
+  x = x0; v = v0; a = a0; j = j0; t = 0; next = T; lv = 7; wd = 0;
+  const d4 vnan{std::nan(""), 0, 0, 0};
+  CHECK(update_particle_d<Dissipation::LinearDrag>(p, false, true, a1, j1, vnan, 4.0, x, v, a, j, t, next, lv, wd) & kNaN);
+}
+
 // accumulate: Newtonian pull, Plummer softening, and the jerk against a finite difference.
 static void test_accumulate() {
   const d4 xi{0, 0, 0, 1}, vi{0, 0, 0, 0};
@@ -157,6 +197,7 @@ int main() {
   test_aarseth();
   test_choose_level();
   test_update_particle();
+  test_update_particle_d_status();
   test_accumulate();
   test_make_params();
   std::puts("test_math: OK");

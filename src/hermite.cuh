@@ -261,7 +261,7 @@ H4_HD unsigned update_particle_d(const StepParams& p, bool is_center, bool drag,
     const double h = double(p.T - t) * p.tick;
     // Pass 1: drag at the predicted velocity.
     dissipation_term<D>(p, vp, a1, j1);
-    const unsigned st1 = update_particle(p, is_center, a1, j1, r2min, x, v, a, j, t, next, level);
+    update_particle(p, is_center, a1, j1, r2min, x, v, a, j, t, next, level);
     // Pass 2: restore the saved state. Drag at the corrected velocity of pass 1.
     const d4 v1 = v;
     x = x0; v = v0; a = a0; j = j0; t = t0; next = next0; level = level0;
@@ -271,7 +271,9 @@ H4_HD unsigned update_particle_d(const StepParams& p, bool is_center, bool drag,
     if (!p.init)
       wd += 0.5 * h * (dissipation_power<D>(p, x.w, v0) + dissipation_power<D>(p, x.w, v)) +
             h * h / 12.0 * (dissipation_power_rate<D>(p, x.w, v0, a0) - dissipation_power_rate<D>(p, x.w, v, a));
-    return st1 | st2;
+    // The status comes from pass 2, because pass 2 gives the stored state. Pass 1 bits are not kept:
+    // a NaN in pass 1 goes into v1, so pass 2 also sets kNaN.
+    return st2;
   }
 }
 
