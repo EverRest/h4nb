@@ -1,0 +1,16 @@
+# Compile check only. A runner without a GPU shows that the code builds, not that it is correct (constitution).
+name: build
+on: [push, pull_request]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container: nvidia/cuda:12.6.2-devel-ubuntu24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: apt-get update -qq && apt-get install -y -qq cmake make g++
+      - run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_CUDA_ARCHITECTURES=80
+      - run: cmake --build build -j"$(nproc)"
+      - name: CPU tests (no GPU needed)
+        run: ctest --test-dir build -L cpu --output-on-failure
+      - name: CPU-only smoke test
+        run: build/h4nb_mkdisk n=1000 frac=0.5 out=/tmp/disk.txt
