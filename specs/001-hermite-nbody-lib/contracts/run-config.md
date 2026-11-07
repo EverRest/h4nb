@@ -147,12 +147,12 @@ period=6.283185307179586
 Run on two development GPUs, with one change on the command line:
 
 ```bash
-build/h4nb_run config=configs/agn.cfg ic=disk.snap out=run1 t_end=6.296875 devices=0,1
+build/h4nb_run config=configs/agn.cfg ic=disk.snap out=run1 t_end=6.3125 devices=0,1
 ```
 
 Under Slurm (MPI build):
 
 ```bash
 H4NB_ETA=0.0005 srun --ntasks-per-node=4 --gpus-per-task=1 --gpu-bind=single:1 \
-  build/h4nb_run config=configs/gh200.cfg ic=disk1m.snap out=run1m t_end=6.296875
+  build/h4nb_run config=configs/gh200.cfg ic=disk1m.snap out=run1m t_end=6.3125
 ```

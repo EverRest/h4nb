@@ -133,8 +133,8 @@ description: "Task list for h4nb: configuration, speed, multi-node scale and inp
 
 ## Phase 7: Polish and cross-cutting
 
-- [ ] T037 [P] Update `specs/001-hermite-nbody-lib/quickstart.md`: config files, presets, `config.used`, the build lines for `89` and `90`, the GH200 Slurm line, and the use of `h4nb_study` in A3.
-- [ ] T038 [P] Update `README.md`: a config-file example, the presets and `help=1`.
+- [x] T037 [P] Update `specs/001-hermite-nbody-lib/quickstart.md`: config files, presets, `config.used`, the build lines for `89` and `90`, the GH200 Slurm line, and the use of `h4nb_study` in A3.
+- [x] T038 [P] Update `README.md`: a config-file example, the presets and `help=1`.
 - [x] T039 Update `checklists/requirements.md` for the spec changes of 2026-11-07 (spec.md is already updated).
 - [x] T040 Update the detailed plan `docs/superpowers/plans/2026-11-07-h4nb.md`: D1 (config file in the tools), D3 and O7 (MPI in v1), O2 (now done through T017 to T021).
 
