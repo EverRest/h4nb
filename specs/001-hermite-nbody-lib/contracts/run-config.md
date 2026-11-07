@@ -81,7 +81,7 @@ A preset sets defaults only. A file, the environment or the command line can cha
 |---|---|---|---|---|
 | `mode` | enum | `block` | `block`, `fixed` | Block steps or one shared step. |
 | `eta` | real | 0.01 | > 0 | Aarseth accuracy parameter. 1e-8 needs about 5e-4 (D11). |
-| `eta_init` | real | 0.01 | > 0 | First step: `eta_init·|a|/|j|`. |
+| `eta_init` | real | 0 | >= 0 | First step: Aarseth dt at t = 0 with eta_init. 0 uses eta. |
 | `dt_max` | real | 0.015625 | > 0, power of two | Step of level 0. |
 | `max_level` | int | 40 | 1 to 50 | `dt_min = dt_max / 2^max_level`. |
 | `fixed_level` | int | 0 | 0 to `max_level` | Level of all particles in `fixed` mode. |

@@ -3,8 +3,9 @@
 //                   [out=bench] [key=value ...]
 // "h4nb_bench help=1" prints all keys. The tool writes <out>/config.used, <out>/run_info.txt and <out>/bench.dat.
 // For each combination (N, tile, blocks_per_sm), the tool builds a disk of N particles, central body included.
-// It times the Simulation constructor. The constructor does the first force pass (N(N-1) pairs).
-// The time also includes the upload and the first time steps. Thus pairs_per_s is a lower limit of the kernel rate.
+// The rate uses metrics().init_force_s: the host time of the first force pass (N(N-1) pairs), with its sync.
+// It does not include the upload, the initial levels (init_levels_s) or the first time steps. The launch and the sync
+// are included, so pairs_per_s is a lower limit of the kernel rate. wall_s is the time of the whole constructor.
 // When segments > 0, the tool then advances segments * dt_max and prints the block-step rate (stdout only).
 // gflops = 60 * pairs_per_s / 1e9. 60 FP64 FLOP per pair is the cost model of the plan and of research.md R6.
 // It is a model, not a count of the instructions in the kernel.
@@ -44,7 +45,7 @@ static void declare(Settings& s) {
 
 struct Row {
   int n, tile, bpsm;
-  double pairs_per_s, gflops, wall;
+  double pairs_per_s, gflops, force_s;
 };
 
 static int run(int argc, char** argv) try {
@@ -81,11 +82,12 @@ static int run(int argc, char** argv) try {
   if (!f) throw std::runtime_error("cannot write " + out + "/bench.dat");
   std::string ids;
   for (int d : c.devices) ids += (ids.empty() ? "" : ",") + std::to_string(d);
-  std::fprintf(f, "# h4nb_bench device_ids=%s eta=%g eps2=%g seed=%llu flop_per_pair=%g fp64_peak_tflops=%g\n", ids.c_str(),
+  std::fprintf(f, "# h4nb_bench device_ids=%s eta=%.17g eps2=%.17g seed=%llu flop_per_pair=%g fp64_peak_tflops=%g\n", ids.c_str(),
                c.eta, c.eps2, (unsigned long long)seed, kFlopPerPair, peak);
-  std::fprintf(f, "# N devices tile blocks_per_sm pairs_per_s gflops wall_s%s\n", peak > 0 ? " pct_peak" : "");
-  std::printf("%9s %4s %4s %4s %10s %12s %9s %7s %10s %8s %12s\n", "N", "GPUs", "tile", "bpsm", "init_s", "init_pair/s",
-              "GFLOP/s", "%peak", "step_s", "blocks", "step_pair/s");
+  std::fprintf(f, "# N devices tile blocks_per_sm pairs_per_s gflops wall_s init_force_s init_levels_s%s\n",
+               peak > 0 ? " pct_peak" : "");
+  std::printf("%9s %4s %4s %4s %10s %12s %9s %7s %10s %10s %8s %12s\n", "N", "GPUs", "tile", "bpsm", "force_s",
+              "force_pair/s", "GFLOP/s", "%peak", "levels_s", "step_s", "blocks", "step_pair/s");
   std::fflush(stdout);
   std::vector<Row> rows;
   for (int n : sizes) {
@@ -98,8 +100,10 @@ static int run(int argc, char** argv) try {
         const auto t0 = Clock::now();
         auto simp = make_simulation(p, c);
         h4nb::Simulation& sim = *simp;
-        const h4nb::Stats st0 = sim.stats();  // stats() waits for the devices. The first force pass is counted here.
-        const double init = since(t0);
+        const h4nb::Stats st0 = sim.stats();  // stats() waits for the devices.
+        const double wall = since(t0);
+        const h4nb::Metrics mx = sim.metrics();
+        const double init = mx.init_force_s, levels = mx.init_levels_s;
         const double rate = N * (N - 1) / init, gflops = kFlopPerPair * rate / 1e9;
         const double pct = peak > 0 ? 100.0 * gflops / (1000.0 * peak) : NAN;
         double step = 0, step_rate = NAN;
@@ -112,12 +116,13 @@ static int run(int argc, char** argv) try {
           blocks = (long long)(st.block_steps - st0.block_steps);
           step_rate = double(st.active_total - st0.active_total) * N / step;
         }
-        std::fprintf(f, "%d %zu %d %d %.6e %.3f %.6f", n, c.devices.size(), tile, b, rate, gflops, init);
+        std::fprintf(f, "%d %zu %d %d %.6e %.3f %.6f %.6f %.6f", n, c.devices.size(), tile, b, rate, gflops, wall, init,
+                     levels);
         if (peak > 0) std::fprintf(f, " %.2f", pct);
         std::fprintf(f, "\n");
         std::fflush(f);
-        std::printf("%9d %4zu %4d %4d %10.3f %12.3e %9.1f %7.1f %10.3f %8lld %12.3e\n", n, c.devices.size(), tile, b, init,
-                    rate, gflops, pct, step, blocks, step_rate);
+        std::printf("%9d %4zu %4d %4d %10.3f %12.3e %9.1f %7.1f %10.3f %10.3f %8lld %12.3e\n", n, c.devices.size(), tile, b,
+                    init, rate, gflops, pct, levels, step, blocks, step_rate);
         std::fflush(stdout);
         rows.push_back({n, tile, b, rate, gflops, init});
       }

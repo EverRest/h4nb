@@ -18,6 +18,10 @@ int main() {
   // A Tn on a coarser grid than dt_max gives level 0, not a negative index.
   CHECK(detail::block_level(5, 32) == 0);
   CHECK(detail::block_level(5, 64) == 0);
+  // The start-up times are zero until a constructor sets them.
+  const Metrics m{};
+  CHECK(m.init_force_s == 0);
+  CHECK(m.init_levels_s == 0);
   std::printf("test_metrics: ok\n");
   return 0;
 }

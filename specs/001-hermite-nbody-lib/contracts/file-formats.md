@@ -34,10 +34,14 @@ All tables are text with one header line that starts with `#`.
 | `performance.dat` | `time wall_s block_steps active pairs_per_s` |
 | `energy_periods.dat` (new) | `period t_start t_end max_rel_err mean_rel_err complete`. One row for each reference period k that the run touches. The row uses the diag points with time in ((k−1)T, kT]. `complete` is 1 when the run reached kT, else 0. A period with no diag point has `nan` in `max_rel_err` and `mean_rel_err`. |
 | `study.dat` (new) | see data-model.md section 9 |
-| `bench.dat` (new) | `N devices tile blocks_per_sm pairs_per_s gflops wall_s`, then `pct_peak` when `fp64_peak` > 0. `devices` is the number of device IDs. The first header line gives the device IDs. `gflops` = 60 × `pairs_per_s` / 1e9 (research.md R6). `wall_s` is the time of the first force pass, upload and first time steps included. |
+| `bench.dat` (new) | `N devices tile blocks_per_sm pairs_per_s gflops wall_s init_force_s init_levels_s`, then `pct_peak` when `fp64_peak` > 0. `devices` is the number of device IDs. The first header line gives the device IDs. `pairs_per_s` and `gflops` (60 × `pairs_per_s` / 1e9, research.md R6) use `init_force_s`: the first force pass, with its sync. `init_levels_s` is the initial levels. `wall_s` is the time of the whole constructor. |
 
 ## 4. Run record (new)
 
 - `config.used`: `key=value  # source` lines. See run-config.md section 6.
 - `run_info.txt`: `key: value` lines. See data-model.md section 8.
 - Log archive: `tools/h4nb_pack.sh RUN_DIR...` writes `h4nb_logs_<host>_<UTC time>.tar.gz`. It contains one top directory with one subdirectory for each RUN_DIR, `slurm/` for Slurm logs, and `MANIFEST.txt` (host, time, `nvidia-smi` output, file sizes, sha256 sums). Snapshots are in it only with `--snap`.
+
+## 4. Files after an MPI error
+
+When an MPI run stops because of an error on a rank other than rank 0, the records of rank 0 stay in the `*.dat.tmp` files. Rank 0 does not rename them to `*.dat`.

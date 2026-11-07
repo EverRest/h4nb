@@ -32,6 +32,8 @@ expect 2 "cannot open" "$run" ic="$dir/missing.txt" out="$dir/r2" t_end=1  # bad
 expect 2 "nosuchkey" "$run" ic="$dir/ok.txt" out="$dir/r3" t_end=1 nosuchkey=1  # unknown key
 expect 2 "G=-1 (cli): out of range (> 0)" "$run" ic="$dir/ok.txt" out="$dir/r4" t_end=1 G=-1           # bad G
 expect 2 "must be >= 2" "$study" ic="$dir/one.txt" out="$dir/s1" diag=1               # one particle
+expect 2 "eta_init" "$run" ic="$dir/ok.txt" out="$dir/r5" t_end=1 eta_init=-1         # bad eta_init (>= 0 is valid)
+expect 2 "eta_init" "$study" ic="$dir/ok.txt" out="$dir/s2" diag=1 eta_init=-1        # bad eta_init (study)
 
 if [ "$fails" -ne 0 ]; then
   echo "exit_codes: $fails check(s) failed" >&2

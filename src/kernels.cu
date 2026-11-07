@@ -98,7 +98,8 @@ __global__ void correct_kernel(int na, const int* __restrict__ act, const d4* __
   int li = level[i];
   if constexpr (D == Dissipation::Off) {
     double w = 0;  // Not used.
-    const unsigned st = update_particle_d<D>(p, i == center, false, a1, j1, vi, f.w, xi, vi, ai, ji, ti, ni, li, w);
+    const d4 vpi = vi;  // vp and v must not alias: v is the output.
+    const unsigned st = update_particle_d<D>(p, i == center, false, a1, j1, vpi, f.w, xi, vi, ai, ji, ti, ni, li, w);
     if (st) atomicOr(status, st);
   } else {
     double w = wd[i];

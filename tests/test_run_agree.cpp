@@ -30,6 +30,16 @@ static std::vector<InputEntry> entries_of(std::vector<std::string> args) {
 
 static uint64_t digest_of(const std::vector<std::string>& args) { return entries_digest(entries_of(args)); }
 
+// True when the settings parser accepts the arguments.
+static bool accepts(const std::vector<std::string>& args) {
+  try {
+    entries_of(args);
+    return true;
+  } catch (const SettingsError&) {
+    return false;
+  }
+}
+
 static void write_file(const char* path, const char* text) {
   FILE* f = std::fopen(path, "wb");
   std::fputs(text, f);
@@ -84,6 +94,21 @@ int main() {
 
   // With one rank, the agreement is the identity.
   CHECK(same_on_all(12345));
+
+  // The rank's out directory is not in the fingerprint (MPI-L: only rank 0 writes files).
+  CHECK(digest_of({icarg, "out=a", "t_end=1"}) == digest_of({icarg, "out=b", "t_end=1"}));
+
+  // eta_init = 0 is valid: it means "use eta" (library review item 1). Negative values are not.
+  CHECK(accepts({icarg, "out=o", "t_end=1", "eta_init=0"}));
+  CHECK(!accepts({icarg, "out=o", "t_end=1", "eta_init=-1"}));
+
+  // A NaN relative error fails the energy verdict. std::max would drop it (review D8).
+  PeriodTracker tracker(1.0);
+  tracker.add(0.25, 1e-12);
+  tracker.add(0.75, NAN);
+  tracker.finish(1.0);
+  const std::string verdict = tracker.verdict(1e-8, "test", 0, 1.0);
+  CHECK(verdict.rfind("energy verdict: FAIL", 0) == 0);
 
   std::remove(ic);
   if (failures) {

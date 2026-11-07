@@ -332,7 +332,7 @@ Rules:
 | `snap_NNNNNN.snap`, `snap_final.snap` | Binary snapshot: header + `id m x y z vx vy vz` arrays |
 | `config.used` | Final configuration: key, value and source of each key |
 | `run_info.txt` | Tool, commit, build type, architectures, nvcc, CUDA runtime and driver, GPUs, ranks, host, start time, command line. `h4nb_study` and `h4nb_bench` write it too. |
-| `bench.dat` (`h4nb_bench`) | `N devices tile blocks_per_sm pairs_per_s gflops wall_s`, and `pct_peak` when `fp64_peak` > 0. `gflops` uses 60 FP64 FLOP per pair (research.md R6). `wall_s` is the time of the first force pass, upload included. |
+| `bench.dat` (`h4nb_bench`) | `N devices tile blocks_per_sm pairs_per_s gflops wall_s init_force_s init_levels_s`, and `pct_peak` when `fp64_peak` > 0. `pairs_per_s` and `gflops` use 60 FP64 FLOP per pair (research.md R6) and `init_force_s`, the first force pass. `init_levels_s` is the initial levels. `wall_s` is the whole constructor. |
 
 At the end, `h4nb_run` prints one line that starts with `energy verdict:`. It is `PASS` or `FAIL` for the maximum relative energy error over the first reference period against `energy_tol`, or `INCOMPLETE` when `t_end` is less than the period. For longer runs the line also gives the maximum over all complete periods and the drift. The exit code is 0 for all three verdicts.
 

@@ -13,4 +13,4 @@ test: build
 	ctest --test-dir $(BUILD) --output-on-failure
 pack:
 	@test -n "$(RUN)" || { echo 'make pack: set RUN, for example: make pack RUN="run128k study"' >&2; exit 2; }
-	tools/h4nb_pack.sh $(if $(OUT),-o $(OUT)) $(if $(filter 1,$(SNAP)),--snap) $(RUN)
+	tools/h4nb_pack.sh $(if $(OUT),-o "$(OUT)") $(if $(filter 1,$(SNAP)),--snap) $(RUN)

@@ -142,7 +142,8 @@ struct StepParams {
 };
 
 inline StepParams make_params(const Config& c, double tick, int64_t T, bool init) {
-  return StepParams{T, tick, c.dt_max, c.eta, c.eta_init, c.G, c.r2_close, c.max_level,
+  // eta_init = 0 means "use eta" (Config::eta_init).
+  return StepParams{T, tick, c.dt_max, c.eta, c.eta_init > 0 ? c.eta_init : c.eta, c.G, c.r2_close, c.max_level,
                     c.mode == StepMode::Fixed ? c.fixed_level : -1, init, c.drag_tau,
                     {c.drag_vbg[0], c.drag_vbg[1], c.drag_vbg[2]}};
 }

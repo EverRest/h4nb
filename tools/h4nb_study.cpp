@@ -36,7 +36,7 @@ static void declare(Settings& s) {
   s.add_preset();
   s.add("G", T::Real, "1", "Gravitational constant.", Range::gt(0));
   s.add("eps", T::Real, "0", "Plummer softening length. The library receives eps^2.", Range::ge(0));
-  s.add("eta_init", T::Real, "0.01", "First step: eta_init*|a|/|j|.", Range::gt(0));
+  s.add("eta_init", T::Real, "0", "First step: Aarseth dt at t = 0 with eta_init. 0 (default) uses eta.", Range::ge(0));
   s.add("max_level", T::Int, "40", "dt_min = dt_max / 2^max_level.", Range::between(1, 50));
   s.add("mode", T::Enum, "block", "Block steps or one shared step.", Range::one_of({"block", "fixed"}));
   s.add("fixed_level", T::Int, "0", "Level of all particles in fixed mode. Not more than max_level.", Range::ge(0));
@@ -136,7 +136,7 @@ static int run(int argc, char** argv) try {
     std::snprintf(why, sizeof why, "%s%.17g", t_list.empty() ? "" : ",", t);
     t_list += why;
   }
-  std::fprintf(f, "# h4nb_study N=%zu preset=%s eps2=%g diag=%.17g t_ends=%s energy_tol=%g\n", p.size(), s.str("preset").c_str(),
+  std::fprintf(f, "# h4nb_study N=%zu preset=%s eps2=%.17g diag=%.17g t_ends=%s energy_tol=%g\n", p.size(), s.str("preset").c_str(),
                c.eps2, diag, t_list.c_str(), tol);
   std::fprintf(f, "# eta dt_max t_end max_rel_err mean_rel_err final_rel_err dP_rel dL_rel block_steps pair_evals wall_s pass\n");
   std::printf("h4nb_study: N=%zu, %zu dt_max x %zu eta x %zu t_end, writing %s/study.dat\n", p.size(), dts.size(), etas.size(),
@@ -150,6 +150,8 @@ static int run(int argc, char** argv) try {
       c.eta = eta;
       auto simp = make_simulation(p, c);
       h4nb::Simulation& sim = *simp;
+      if (sim.status() & h4nb::kInitStepInvalid)
+        std::fprintf(stderr, "warning: dt_max=%g eta=%g: the first step estimate is not finite. The coarsest level is used.\n", dt, eta);
       const h4nb::Stats st0 = sim.stats();  // The init force pass is in st0. It is not counted.
       const h4nb::Diagnostics d0 = sim.diagnostics();
       double max_err = 0, err_sum = 0, wall = 0;
@@ -168,7 +170,7 @@ static int run(int argc, char** argv) try {
           const h4nb::Diagnostics d = sim.diagnostics();
           const double err = std::fabs((d.E - d0.E) / d0.E);
           failed = !std::isfinite(err);
-          max_err = std::max(max_err, err);
+          max_err = failed ? nan : std::max(max_err, err);  // A failed row shows nan, not the old max (review D8).
           err_sum += err;
           ++n_err;
           r.max_err = max_err, r.mean_err = err_sum / double(n_err), r.final_err = err;
@@ -187,7 +189,7 @@ static int run(int argc, char** argv) try {
           r.t_end = t_ends[next++];
           r.pass = !failed && r.max_err <= tol;
           rows.push_back(r);
-          std::fprintf(f, "%g %g %.17g %.6e %.6e %.6e %.6e %.6e %lld %.0f %.6f %d\n", r.eta, r.dt_max, r.t_end, r.max_err, r.mean_err,
+          std::fprintf(f, "%.17g %.17g %.17g %.6e %.6e %.6e %.6e %.6e %lld %.0f %.6f %d\n", r.eta, r.dt_max, r.t_end, r.max_err, r.mean_err,
                        r.final_err, r.dP, r.dL, r.steps, r.pairs, r.wall, int(r.pass));
         }
         std::fflush(f);

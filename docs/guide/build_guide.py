@@ -150,7 +150,7 @@ T["en"] = dict(
     cheat_cfg="Config file ✅", cheat_runcfg="Run with a config file ✅", cheat_mpi="Several nodes (MPI) ✅ compiled, GPU run pending", cheat_cpp="C++ ✅",
     cheat_out="Output files ✅",
     out=[["energy.dat", "time K U E rel_err max_rel_err mean_rel_err W_diss"], ["energy_periods.dat", "period t_start t_end max_rel_err mean_rel_err complete"], ["study/study.dat", "eta dt_max t_end max_rel_err ... pair_evals wall_s pass"], ["momentum.dat", "time Px Py Pz Lx Ly Lz dP_rel dL_rel"],
-         ["timesteps.dat", "time dt_min dt_max dt_mean mean_active r_min"], ["performance.dat", "time wall_s block_steps active pairs_per_s"], ["bench/bench.dat", "N devices tile blocks_per_sm pairs_per_s gflops wall_s [pct_peak]"],
+         ["timesteps.dat", "time dt_min dt_max dt_mean mean_active r_min"], ["performance.dat", "time wall_s block_steps active pairs_per_s"], ["bench/bench.dat", "N devices tile blocks_per_sm pairs_per_s gflops wall_s init_force_s init_levels_s [pct_peak]"],
          ["snap_NNNNNN.snap", "binary: header + id m x y z vx vy vz"], ["config.used, run_info.txt", "configuration; commit, CUDA, GPUs, host, command"]],
     s_problems="7. Common problems",
     prob_head=["Symptom", "Cause", "Action"],

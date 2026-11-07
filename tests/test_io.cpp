@@ -116,11 +116,82 @@ static void test_snapshot_rejects_bad_files() {
   fs::remove(path);
 }
 
+// True when read_snapshot throws std::runtime_error. Any other exception counts as a failure.
+static bool read_snapshot_throws(const std::string& path) {
+  try {
+    h4nb::read_snapshot(path);
+  } catch (const std::runtime_error&) {
+    return true;
+  } catch (...) {
+    return false;
+  }
+  return false;
+}
+
+// Write a 32-byte v1 header with the given n, then "body_bytes" zero bytes.
+static void write_raw_snapshot(const std::string& path, uint64_t n, size_t body_bytes) {
+  std::ofstream f(path, std::ios::binary);
+  f.write("H4NBSNAP", 8);
+  const uint32_t version = 1, reserved = 0;
+  const double time = 0.0;
+  f.write(reinterpret_cast<const char*>(&version), 4);
+  f.write(reinterpret_cast<const char*>(&reserved), 4);
+  f.write(reinterpret_cast<const char*>(&n), 8);
+  f.write(reinterpret_cast<const char*>(&time), 8);
+  const std::string zeros(body_bytes, '\0');
+  f.write(zeros.data(), std::streamsize(zeros.size()));
+}
+
+static void test_snapshot_header_n_larger_than_file() {
+  const std::string path = tmp_path("h4nb_test_bign.bin");
+  write_raw_snapshot(path, 10, 3 * 64);  // header says 10, the body has room for 3
+  CHECK(read_snapshot_throws(path));
+  fs::remove(path);
+}
+
+static void test_snapshot_trailing_bytes() {
+  const std::string path = tmp_path("h4nb_test_trail.bin");
+  h4nb::Particles p;
+  p.resize(3);
+  for (size_t i = 0; i < 3; ++i) { p.id[i] = int64_t(i); p.m[i] = 1.0; }
+  h4nb::write_snapshot(path, p, 0.0);
+  {
+    std::ofstream f(path, std::ios::binary | std::ios::app);
+    f.write("tail", 4);
+  }
+  CHECK(read_snapshot_throws(path));
+  fs::remove(path);
+}
+
+static void test_snapshot_huge_n() {
+  const std::string path = tmp_path("h4nb_test_hugen.bin");
+  write_raw_snapshot(path, uint64_t(1) << 61, 0);
+  CHECK(read_snapshot_throws(path));
+  fs::remove(path);
+}
+
+static void test_text_loader_fractional_id() {
+  const std::string path = tmp_path("h4nb_test_frac.txt");
+  write_file(path, "0 1 0 0 0 0 0 0\n1.5 1 0 0 1 0 0\n");  // the ID "1.5" must not shift the fields
+  bool threw = false;
+  try {
+    h4nb::load_text(path);
+  } catch (const std::runtime_error&) {
+    threw = true;
+  }
+  CHECK(threw);
+  fs::remove(path);
+}
+
 int main() {
   test_text_loader();
   test_text_loader_bad_line();
   test_snapshot_roundtrip();
   test_snapshot_rejects_bad_files();
+  test_snapshot_header_n_larger_than_file();
+  test_snapshot_trailing_bytes();
+  test_snapshot_huge_n();
+  test_text_loader_fractional_id();
   std::puts("test_io: OK");
   return 0;
 }

@@ -17,10 +17,6 @@ static std::string read_bytes(const std::string& path) {
 }
 
 static void test_failed_write_keeps_old_snapshot() {
-  if (!fs::exists("/dev/full")) {
-    std::puts("test_io_atomic: /dev/full not found, skipped");
-    return;
-  }
   const fs::path dir = fs::temp_directory_path() / "h4nb_test_atomic";
   fs::remove_all(dir);
   fs::create_directories(dir);
@@ -53,6 +49,11 @@ static void test_failed_write_keeps_old_snapshot() {
 }
 
 int main() {
+  // Exit code 77 tells CTest that the test is skipped. It needs SKIP_RETURN_CODE 77 (see CMakeLists.txt).
+  if (!fs::exists("/dev/full")) {
+    std::puts("test_io_atomic: /dev/full not found, skipped");
+    return 77;
+  }
   test_failed_write_keeps_old_snapshot();
   std::puts("test_io_atomic: OK");
   return 0;

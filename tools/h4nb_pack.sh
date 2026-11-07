@@ -48,6 +48,8 @@ find_args=("${find_args[@]:1}")
 
 n=0
 for d in "${dirs[@]}"; do
+  # Remove a trailing "/". Otherwise the archive gets run1/run1/... paths.
+  d=${d%/}
   # Keep the name of the run directory, so that two runs do not overwrite each other.
   name=$(basename "$(cd "$d" && pwd)")
   while IFS= read -r -d '' f; do

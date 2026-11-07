@@ -33,6 +33,9 @@
 using Clock = std::chrono::steady_clock;
 static double since(Clock::time_point t) { return std::chrono::duration<double>(Clock::now() - t).count(); }
 
+// std::max drops a NaN. This keeps it, so a NaN error stays visible in the verdict (review D8).
+static double max_keep_nan(double a, double b) { return std::isnan(a) || std::isnan(b) ? NAN : std::max(a, b); }
+
 // Energy verdict over the reference period T (task T014, FR-012, SC-001). It does not use the Simulation.
 // Period k (k = 1, 2, ...) holds the diag points with time in ((k-1)T, kT]. The point at t = 0 is in no period.
 // A time within a relative tolerance of 1e-12 of kT belongs to period k.
@@ -59,7 +62,7 @@ struct PeriodTracker {
     if (k < 1) return;
     if (rows.size() < size_t(k)) rows.resize(size_t(k));
     Row& r = rows[size_t(k - 1)];
-    r.max = std::max(r.max, err);
+    r.max = max_keep_nan(r.max, err);
     r.sum += err;
     ++r.n;
   }
@@ -103,7 +106,7 @@ struct PeriodTracker {
       for (const Row& r : rows)
         if (r.complete) {
           ++complete;
-          if (r.n) all = std::max(all, r.max), last = r.max;
+          if (r.n) all = max_keep_nan(all, r.max), last = r.max;
         }
       if (complete >= 2) {
         std::snprintf(b, sizeof b, " periods=%d max_rel_err(complete periods)=%.3e drift=%.3e", complete, all, last - p1->max);
@@ -139,7 +142,7 @@ static void declare(Settings& s) {
   s.add("drag_vbg", T::RealList, "0,0,0", "Background velocity vx,vy,vz of the drag.", Range().size(3));
   s.add("mode", T::Enum, "block", "Block steps or one shared step.", Range::one_of({"block", "fixed"}));
   s.add("eta", T::Real, "0.01", "Aarseth accuracy parameter.", Range::gt(0));
-  s.add("eta_init", T::Real, "0.01", "First step: eta_init*|a|/|j|.", Range::gt(0));
+  s.add("eta_init", T::Real, "0", "First step: Aarseth dt at t = 0 with eta_init. 0 (default) uses eta.", Range::ge(0));
   s.add("dt_max", T::Real, "0.015625", "Step of level 0.", Range::gt(0).power_of_two());
   s.add("max_level", T::Int, "40", "dt_min = dt_max / 2^max_level.", Range::between(1, 50));
   s.add("fixed_level", T::Int, "0", "Level of all particles in fixed mode. Not more than max_level.", Range::ge(0));
@@ -222,6 +225,7 @@ static std::string hex64(uint64_t v) {
 static std::vector<InputEntry> input_entries(const Settings& s, bool help) {
   std::vector<InputEntry> out;
   for (const Setting& k : s.keys()) {
+    if (k.name == "out") continue;  // Only rank 0 writes files. A rank-local out directory is not a mismatch.
     std::string text = k.value;  // The value as the source gave it.
     if (!k.value.empty() && k.type == Setting::Real) {
       char b[32];
@@ -417,7 +421,8 @@ static int run(int argc, char** argv) {
     FILE** slots[5] = {&fe, &fm, &ft, &fp, &fv};
     for (int i = 0; i < 5; ++i) {
       if (!*slots[i]) continue;
-      const bool ok = std::ferror(*slots[i]) == 0 && std::fclose(*slots[i]) == 0;
+      const bool write_err = std::ferror(*slots[i]) != 0;  // Read before fclose: the stream is invalid after it (L3).
+      const bool ok = std::fclose(*slots[i]) == 0 && !write_err;
       *slots[i] = nullptr;
       const std::string tmp = out + "/" + kDatNames[i] + ".tmp";
       if (!ok) file_error("cannot write the .dat files in " + out);
@@ -447,7 +452,6 @@ static int run(int argc, char** argv) {
   }
 
   // The constructor is collective: an error in its checks throws on all ranks (library, task T034).
-  const auto t0 = Clock::now();
   std::unique_ptr<h4nb::Simulation> simp;
   try {
     simp = make_simulation(p, c);
@@ -457,16 +461,29 @@ static int run(int argc, char** argv) {
     // The constructor throws on all ranks, so all ranks call the agreement. It prints the local error of each rank.
     return agree_setup(dynamic_cast<const SettingsError*>(&e) ? 2 : 1, &e);
   }
+  // status() is collective: all ranks call it, and they get the same bits.
+  const unsigned init_status = simp->status();
+  if (init_status & h4nb::kNaN) {
+    // A non-finite first force. With eps = 0, two particles at one point give this (review D5). It is an input error.
+    close_all();
+    if (root)
+      std::fprintf(stderr, "h4nb_run: error: the initial state gives a non-finite force (NaN or Inf). Check for two "
+                           "particles at the same position. With eps = 0, set eps > 0 or remove one particle.\n");
+    return 2;
+  }
+  if (root && (init_status & h4nb::kInitStepInvalid))
+    std::fprintf(stderr, "warning: the first step estimate is not finite. The coarsest level (dt_max) is used.\n");
   g_phase = Phase::Run;
   h4nb::Simulation& sim = *simp;
-  const double t_init = since(t0);
+  const h4nb::Metrics mx0 = sim.metrics();  // Start-up times. metrics(true) does not clear them.
   if (root) {
     if (nranks > 1)
-      std::printf("N=%zu ranks=%d: init (one full force pass) %.3f s, %.3e pairs/s\n", p.size(), nranks, t_init,
-                  N * (N - 1) / t_init);
+      std::printf("N=%zu ranks=%d: init (one full force pass) %.3f s, %.3e pairs/s\n", p.size(), nranks, mx0.init_force_s,
+                  N * (N - 1) / mx0.init_force_s);
     else
       std::printf("N=%zu devices=%zu: init (one full force pass) %.3f s, %.3e pairs/s\n", p.size(), c.devices.size(),
-                  t_init, N * (N - 1) / t_init);
+                  mx0.init_force_s, N * (N - 1) / mx0.init_force_s);
+    std::printf("init (initial levels) %.3f s\n", mx0.init_levels_s);
   }
   char dissipation_text[160] = "dissipation=off";
   if (drag)
@@ -476,6 +493,7 @@ static int run(int argc, char** argv) {
   const h4nb::Diagnostics d0 = sim.diagnostics();
   bool close_warned = false;
   double max_err = 0, err_sum = 0;
+  bool nonfinite_err = false;  // A relative error is not finite. The run then fails with exit code 3 (review D8).
   long err_n = 0;
   PeriodTracker tracker(period);
   double p_scale = 0, l_scale = 0;  // Scales from the initial state. Set to 1 when zero, to avoid division by zero.
@@ -489,7 +507,8 @@ static int run(int argc, char** argv) {
   if (!(l_scale > 0)) l_scale = 1;
   auto write_diag = [&](const h4nb::Diagnostics& d) {
     const double err = std::fabs((d.E - d0.E - d.W_diss) / d0.E);
-    max_err = std::max(max_err, err);
+    if (!std::isfinite(err)) nonfinite_err = true;
+    max_err = max_keep_nan(max_err, err);
     err_sum += err;
     ++err_n;
     tracker.add(d.time, err);
@@ -540,6 +559,15 @@ static int run(int argc, char** argv) {
       return 3;  // Exit codes: 1 = runtime error, 2 = settings error, 3 = numerical failure.
     }
     write_diag(sim.diagnostics());
+    if (nonfinite_err) {  // Same exit as a NaN state. All ranks see the same error: the diagnostics are collective.
+      if (root) {
+        tracker.finish(sim.time());
+        tracker.write(fv);
+        std::fprintf(stderr, "h4nb_run: non-finite relative energy error (NaN or Inf) at t=%g\n", sim.time());
+      }
+      close_all();
+      return 3;
+    }
     double dmin = 1e300, dmax = 0, dsum = 0;
     for (int lv : sim.levels()) {
       const double dt = c.dt_max / std::ldexp(1.0, lv);
@@ -562,8 +590,9 @@ static int run(int argc, char** argv) {
       return code;
     }
   }
-  // With no snap and no snap_times, write only the final snapshot.
-  if (!snap_every && snap_index.empty()) {
+  // Write the final state unless t_end is a snapshot time. write_snap(nseg) wrote that one already (D3).
+  const bool end_is_snap = (snap_every && nseg % snap_every == 0) || std::binary_search(snap_index.begin(), snap_index.end(), nseg);
+  if (!end_is_snap) {
     const h4nb::Particles fin = sim.state();  // Collective.
     if (root) try {
         h4nb::write_snapshot(out + "/snap_final.snap", fin, sim.time());

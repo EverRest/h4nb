@@ -35,7 +35,7 @@ struct Config {
   double G = 1.0;
   double eps2 = 0.0;          // Plummer softening squared. 0 means Newtonian gravity (default).
   double eta = 0.01;          // Aarseth accuracy parameter
-  double eta_init = 0.01;     // first step: Aarseth dt at t = 0, with eta_init in place of eta. No force: level 0.
+  double eta_init = 0.0;      // first step: Aarseth dt at t = 0 with eta_init. 0 uses eta. No force: level 0.
   double dt_max = 1.0 / 64;   // Step of level 0. The advance_to() times must be multiples of it.
   int max_level = 40;         // dt_min = dt_max / 2^max_level. Allowed: 1 to 50.
   StepMode mode = StepMode::Block;
@@ -71,6 +71,12 @@ struct Metrics {
   int64_t active_total = 0;
   uint64_t active_hist[64] = {};      // active_hist[log2_bin(NA)]: block steps with NA active particles.
   uint64_t step_level_hist[51] = {};  // step_level_hist[L]: block steps at dt level L, from 0 to 50.
+  // Host wall time of the first force pass, with its sync. Set once by the constructor.
+  // metrics(true) does not clear it.
+  double init_force_s = 0;
+  // Host wall time of the initial levels, with its sync. Set once by the constructor. Zero in Fixed mode.
+  // metrics(true) does not clear it.
+  double init_levels_s = 0;
 };
 
 // floor(log2(n)). It gives 0 for n = 0 and for n = 1.

@@ -2,6 +2,7 @@
 #include <thrust/device_vector.h>
 #include <thrust/iterator/counting_iterator.h>
 #include <algorithm>
+#include <chrono>
 #include <climits>
 #include <cmath>
 #include <cstdio>
@@ -13,6 +14,7 @@
 #include <utility>
 #include <vector>
 #include "h4nb/h4nb.hpp"
+#include "io.hpp"
 #include "kernels.cuh"
 #ifdef H4NB_HAVE_MPI
 #include "mpi_comm.hpp"  // MPI-free interface. Only src/mpi_comm.cpp includes mpi.h.
@@ -91,7 +93,7 @@ void validate(const Config& c) {
   if (!std::isfinite(c.G) || !(c.G > 0)) bad("G must be finite and > 0.");
   if (!std::isfinite(c.eps2) || !(c.eps2 >= 0)) bad("eps2 must be finite and >= 0.");
   if (!std::isfinite(c.eta) || !(c.eta > 0)) bad("eta must be finite and > 0.");
-  if (!std::isfinite(c.eta_init) || !(c.eta_init > 0)) bad("eta_init must be finite and > 0.");
+  if (!std::isfinite(c.eta_init) || !(c.eta_init >= 0)) bad("eta_init must be finite and >= 0 (0 uses eta).");
   int e = 0;
   if (!std::isfinite(c.dt_max) || !(c.dt_max > 0) || std::frexp(c.dt_max, &e) != 0.5)
     bad("dt_max must be finite, > 0 and an exact power of two (for example 1/64).");
@@ -162,12 +164,13 @@ struct Simulation::Impl {
   std::vector<Dev> d;
   Stats st;
   Metrics mx;                    // Host counters for metrics(). Same block steps as st.
+  double init_force_s = 0, init_levels_s = 0;  // Start-up times. metrics() copies them. reset does not clear them.
   // The particle set has P parts [base, base + n). One process: one part for each device, P = devices.size().
   // MPI (several ranks): one part for each rank, P = ranks(). Then d holds one device, the GPU of this rank.
   bool mpi = false;
   int P = 1;
   int part0 = 0;                 // Part of d[0]: 0 for one process, the rank for MPI.
-  bool halted = false;           // MPI: a rank has set kNaN. advance_to() stops at the next block step.
+  bool halted = false;           // A device or a rank has set kNaN. advance_to() stops at the next block step.
   std::vector<int> pbase, pn;    // MPI: base and size of each part, in rank order. The counts of the collectives.
 
   static void use(const Dev& e) { H4_CUDA(cudaSetDevice(e.id)); }
@@ -178,7 +181,13 @@ struct Simulation::Impl {
     }
   }
 
-  Impl(const Particles& p, const Config& cfg) : c(cfg), N(int(p.size())) {
+  // D6: N is an int. Reject a larger set before the cast.
+  static int particle_count(const Particles& p) {
+    if (p.size() > size_t(INT_MAX)) throw std::invalid_argument("Simulation: more than INT_MAX particles.");
+    return int(p.size());
+  }
+
+  Impl(const Particles& p, const Config& cfg) : c(cfg), N(particle_count(p)) {
     // Q1: the destructor does not run when a constructor throws. So release the CUDA resources here.
     // release() is safe to call twice: the second call finds d empty.
     try {
@@ -189,8 +198,7 @@ struct Simulation::Impl {
       }
 #endif
       setup(p);
-      step(true);
-      sync();
+      init_pass();
     } catch (...) {
       release();
       throw;
@@ -235,8 +243,7 @@ struct Simulation::Impl {
       throw std::runtime_error(why);
     }
     try {
-      step(true);
-      sync();
+      init_pass();
     } catch (const std::exception& ex) {
       comm::fatal(ex.what());
     }
@@ -253,6 +260,11 @@ struct Simulation::Impl {
     if (p.id.size() != n || p.x.size() != n || p.y.size() != n || p.z.size() != n || p.vx.size() != n ||
         p.vy.size() != n || p.vz.size() != n)
       throw std::invalid_argument("The Particles arrays have different sizes.");
+    try {  // D6: m > 0, finite values, unique IDs. O(N).
+      validate_particles(p, "Simulation input");
+    } catch (const std::runtime_error& ex) {
+      throw std::invalid_argument(ex.what());
+    }
     int mpi_dev = 0;  // MPI: the GPU of this rank (docs/multi-node-design.md section 3.3). devices is not used.
 #ifdef H4NB_HAVE_MPI
     if (mpi) {
@@ -308,8 +320,8 @@ struct Simulation::Impl {
       e.tmp = e.alloc<char>(e.tmp_bytes);
       H4_CUDA(cudaMallocHost(&e.h_min, sizeof(int64_t)));
       H4_CUDA(cudaMallocHost(&e.h_nsel, sizeof(int)));
+      H4_CUDA(cudaMallocHost(&e.h_status, sizeof(unsigned)));
       if (mpi) {
-        H4_CUDA(cudaMallocHost(&e.h_status, sizeof(unsigned)));
         if (c.mpi_host_staging) {
           // ponytail: about N * 132 B + 2 * P * n * 32 B of pinned memory for each rank. Upgrade: buffers of
           // the size of the largest active set, if the pinned memory is measured as a problem.
@@ -436,13 +448,25 @@ struct Simulation::Impl {
     H4_CUDA(cudaGetLastError());
   }
 
+  // Start-up: the first force pass, then the initial levels. Each part is timed on the host, with its sync.
+  void init_pass() {
+    using Clock = std::chrono::steady_clock;
+    const auto t0 = Clock::now();
+    step(true);
+    sync();
+    const auto t1 = Clock::now();
+    init_levels();
+    const auto t2 = Clock::now();
+    init_force_s = std::chrono::duration<double>(t1 - t0).count();
+    init_levels_s = std::chrono::duration<double>(t2 - t1).count();
+  }
+
   // One block step. See "How a block step works" in the plan.
   // ponytail: two host syncs per block step (about 10 to 30 us). This matters only when NA is very small. Upgrade: CUDA graphs or device-side scheduling (O4).
   void step(bool init) {
 #ifdef H4NB_HAVE_MPI
     if (mpi) {
       step_mpi(init);
-      if (init) init_levels();
       return;
     }
 #endif
@@ -453,12 +477,20 @@ struct Simulation::Impl {
         use(e);
         H4_CUDA(cub::DeviceReduce::Min(e.tmp, e.tmp_bytes, e.next, e.dmin, e.n, e.s));
         H4_CUDA(cudaMemcpyAsync(e.h_min, e.dmin, sizeof(int64_t), cudaMemcpyDeviceToHost, e.s));
+        H4_CUDA(cudaMemcpyAsync(e.h_status, e.status, sizeof(unsigned), cudaMemcpyDeviceToHost, e.s));
       }
       Tn = INT64_MAX;
+      unsigned flags = 0;
       for (auto& e : d) {
         use(e);
         H4_CUDA(cudaStreamSynchronize(e.s));
         Tn = std::min(Tn, *e.h_min);
+        flags |= *e.h_status;
+      }
+      // A9 (MPI-M6): stop at this block step when a device has set kNaN. The MPI path does the same.
+      if (flags & kNaN) {
+        halted = true;
+        return;
       }
     }
     for (auto& e : d) {
@@ -538,7 +570,6 @@ struct Simulation::Impl {
     ++mx.block_steps;
     mx.active_total += NA;
     mx.step_level_hist[detail::block_level(c.max_level, Tn)]++;
-    if (init) init_levels();
   }
 
 #ifdef H4NB_HAVE_MPI
@@ -657,6 +688,7 @@ Simulation::~Simulation() = default;
 
 void Simulation::advance_to(double t) {
   Impl& m = *impl_;
+  if (!std::isfinite(t)) throw std::invalid_argument("advance_to: t must be finite");  // L7: before the int64 cast.
   const double q = t / m.c.dt_max, r = std::nearbyint(q);
   if (std::fabs(q - r) > 1e-9 * std::max(1.0, std::fabs(q)))
     throw std::invalid_argument("advance_to: t must be a multiple of dt_max");
@@ -672,7 +704,7 @@ void Simulation::advance_to(double t) {
     return;
   }
 #endif
-  while (m.T < target) m.step(false);
+  while (m.T < target && !m.halted) m.step(false);  // Stops early when a device has set kNaN (A9).
   m.sync();
 }
 
@@ -680,6 +712,8 @@ double Simulation::time() const { return double(impl_->T) * impl_->tick; }
 Metrics Simulation::metrics(bool reset) {
   Impl& m = *impl_;
   Metrics out = m.mx;  // Host data only. No sync is needed: NA is the same on all ranks.
+  out.init_force_s = m.init_force_s;
+  out.init_levels_s = m.init_levels_s;
   if (reset) m.mx = Metrics{};
   return out;
 }

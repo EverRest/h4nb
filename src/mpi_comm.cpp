@@ -150,7 +150,12 @@ int cuda_aware_all() {
 void fatal(const std::string& what, int code) {
   if (g_abort_hook) g_abort_hook();  // The tool publishes its partial .dat files here.
   std::fflush(nullptr);  // Keep the records that the tools wrote so far.
-  const int r = initialized() ? state().rank : 0, n = initialized() ? state().size : 1;
+  // L1: MPI_COMM_WORLD, not state(). state() may run MPI_Comm_dup (collective) and hang here.
+  int r = 0, n = 1;
+  if (initialized()) {
+    MPI_Comm_rank(MPI_COMM_WORLD, &r);
+    MPI_Comm_size(MPI_COMM_WORLD, &n);
+  }
   std::fprintf(stderr, "h4nb: fatal error on rank %d of %d: %s. All ranks stop (MPI_Abort).\n", r, n, what.c_str());
   std::fflush(stderr);
   if (initialized()) MPI_Abort(MPI_COMM_WORLD, code);

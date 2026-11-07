@@ -181,6 +181,77 @@ static void test_accumulate() {
   CHECK_NEAR(at.jx, jx_fd, 1e-7 * std::fabs(jx_fd) + 1e-12);
 }
 
+// Taylor trajectory of one body (TZ 3.2). Exact for constant jerk. The mass stays in x.w.
+struct Body {
+  d4 x, v, a, j;
+};
+
+static double pos(const Body& b, int k, double t) {
+  return comp(b.x, k) + comp(b.v, k) * t + comp(b.a, k) * t * t / 2 + comp(b.j, k) * t * t * t / 6;
+}
+
+// Pair acceleration on body i from body s at time t, component k. G is 1. The mass of s is in s.x.w.
+static double pair_acc(const Body& bi, const Body& bs, int k, double t, double eps2) {
+  double r2 = eps2, dk = 0;
+  for (int c = 0; c < 3; ++c) {
+    const double dc = pos(bs, c, t) - pos(bi, c, t);
+    r2 += dc * dc;
+    if (c == k) dk = dc;
+  }
+  return bs.x.w * dk / std::pow(r2, 1.5);
+}
+
+// Snap and crackle at t = 0 by finite differences. The second derivative uses a 5-point stencil (error h^4).
+// The third derivative uses a 4-point stencil (error h^2). Richardson with h and h/2 removes the leading error.
+static void fd_snap_crackle(const Body& bi, const Body& bs, double eps2, double h, double s[3], double c[3]) {
+  for (int k = 0; k < 3; ++k) {
+    auto A = [&](double t) { return pair_acc(bi, bs, k, t, eps2); };
+    auto d2 = [&](double hh) { return (-A(2 * hh) + 16 * A(hh) - 30 * A(0) + 16 * A(-hh) - A(-2 * hh)) / (12 * hh * hh); };
+    auto d3 = [&](double hh) { return (A(2 * hh) - 2 * A(hh) + 2 * A(-hh) - A(-2 * hh)) / (2 * hh * hh * hh); };
+    s[k] = (16 * d2(h / 2) - d2(h)) / 15;
+    c[k] = (4 * d3(h / 2) - d3(h)) / 3;
+  }
+}
+
+// Compares accumulate_sc with the finite differences. The error is a vector-norm ratio.
+static void check_sc_fd(const Body& bi, const Body& bs, double eps2) {
+  double s_fd[3], c_fd[3];
+  fd_snap_crackle(bi, bs, eps2, 1e-2, s_fd, c_fd);
+  SC f;
+  accumulate_sc(f, bi.x, bi.v, bi.a, bi.j, bs.x, bs.v, bs.a, bs.j, eps2);
+  double ds = 0, ns = 0, dc = 0, nc = 0;
+  for (int k = 0; k < 3; ++k) {
+    ds += (f.s[k] - s_fd[k]) * (f.s[k] - s_fd[k]);
+    ns += f.s[k] * f.s[k];
+    dc += (f.c[k] - c_fd[k]) * (f.c[k] - c_fd[k]);
+    nc += f.c[k] * f.c[k];
+  }
+  const double snap_err = std::sqrt(ds / ns), crackle_err = std::sqrt(dc / nc);
+  CHECK_NEAR(snap_err, 0.0, 1e-8);     // Measured 2e-11.
+  CHECK_NEAR(crackle_err, 0.0, 1e-6);  // Measured 1e-8.
+}
+
+// accumulate_sc against finite differences. The bodies have nonzero dr, dv, da and dj, so every term counts.
+static void test_accumulate_sc() {
+  const Body bi{{0.1, -0.2, 0.3, 1.0}, {0.3, -0.2, 0.1, 0}, {0.5, 0.4, -0.3, 0}, {-0.2, 0.6, 0.1, 0}};
+  const Body bs{{1.2, 0.5, -0.8, 2.0}, {-0.1, 0.4, 0.2, 0}, {-0.3, 0.2, 0.6, 0}, {0.4, -0.5, 0.3, 0}};
+  check_sc_fd(bi, bs, 0.05);
+  check_sc_fd(bi, bs, 0.0);
+}
+
+// add_drag_sc with hand values: tau = 2, j = (4, -2, 1), s = (1, 1, 1), c = (3, 0, -1).
+// s = s - j / tau = (-1, 2, 0.5). c = c - s_new / tau = (3.5, -1, -1.25).
+static void test_add_drag_sc() {
+  d4 s{1, 1, 1, 0}, c{3, 0, -1, 0};
+  add_drag_sc(2.0, d4{4, -2, 1, 0}, s, c);
+  CHECK_NEAR(s.x, -1.0, 1e-15);
+  CHECK_NEAR(s.y, 2.0, 1e-15);
+  CHECK_NEAR(s.z, 0.5, 1e-15);
+  CHECK_NEAR(c.x, 3.5, 1e-15);
+  CHECK_NEAR(c.y, -1.0, 1e-15);
+  CHECK_NEAR(c.z, -1.25, 1e-15);
+}
+
 static void test_make_params() {
   Config c;
   c.mode = StepMode::Block;
@@ -189,6 +260,13 @@ static void test_make_params() {
   c.fixed_level = 4;
   StepParams p = make_params(c, 1.0, 5, false);
   CHECK(p.fixed_level == 4 && p.T == 5 && !p.init);
+  // eta_init = 0 means "use eta". A positive eta_init is passed as it is.
+  Config e;
+  e.eta = 0.02;
+  e.eta_init = 0.0;
+  CHECK(make_params(e, 1.0, 0, false).eta_init == 0.02);
+  e.eta_init = 0.005;
+  CHECK(make_params(e, 1.0, 0, false).eta_init == 0.005);
 }
 
 int main() {
@@ -199,6 +277,8 @@ int main() {
   test_update_particle();
   test_update_particle_d_status();
   test_accumulate();
+  test_accumulate_sc();
+  test_add_drag_sc();
   test_make_params();
   std::puts("test_math: OK");
   return 0;
