@@ -23,6 +23,7 @@
 #include "disk.hpp"
 #include "h4nb/h4nb.hpp"
 #include "run_info.hpp"
+#include "input.hpp"
 #include "settings.hpp"
 
 using Clock = std::chrono::steady_clock;
@@ -246,8 +247,7 @@ static int run(int argc, char** argv) {
   const bool perf = s.boolean("perf");
   const double energy_tol = s.real("energy_tol");
   const std::string ic = s.str("ic"), out = s.str("out");
-  const bool binary = ic.size() > 5 && ic.compare(ic.size() - 5, 5, ".snap") == 0;
-  const h4nb::Particles p = binary ? h4nb::read_snapshot(ic) : h4nb::load_text(ic);
+  const h4nb::Particles p = load_input(ic);
   if (s.integer("n") > 0 && p.size() != size_t(s.integer("n")))
     s.fail("n", "the file " + ic + " has " + std::to_string(p.size()) + " particles");
   if (p.size() == 0 || p.id[0] != s.integer("central_id"))

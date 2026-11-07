@@ -26,7 +26,7 @@ description: "Task list for h4nb: configuration, speed, multi-node scale and inp
 **Purpose**: example configurations, build targets and the constitution amendment.
 
 - [x] T001 [P] Create `configs/agn.cfg`, `configs/stellar.cfg`, `configs/dev-4070ti.cfg` and `configs/gh200.cfg` with the keys of `contracts/run-config.md`. Set `eta=0.0005` in each (user decision, 2026-11-07). Add one comment line for each key that says why the value was chosen.
-- [ ] T002 [P] In `CMakeLists.txt`, confirm that no flag is x86-only, so the build works on aarch64 (GH200). Add the configure examples for `89`, `90` and `"89;90"` to the comment above `CMAKE_CUDA_ARCHITECTURES`.
+- [x] T002 [P] In `CMakeLists.txt`, confirm that no flag is x86-only, so the build works on aarch64 (GH200). Add the configure examples for `89`, `90` and `"89;90"` to the comment above `CMAKE_CUDA_ARCHITECTURES`.
 - [x] T003 Apply the constitution amendment 2.0.0 in `.specify/memory/constitution.md` with the text of `docs/multi-node-design.md` section 7. Add aarch64 to the platform line. Remove the GTX 1060 (compute capability 6.1). Done on 2026-11-07 with the user's approval.
 
 ---

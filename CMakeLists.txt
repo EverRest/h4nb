@@ -8,6 +8,11 @@ set(CMAKE_CUDA_STANDARD_REQUIRED ON)
 if(NOT CMAKE_BUILD_TYPE)
   set(CMAKE_BUILD_TYPE Release)
 endif()
+# GPU architectures. The default "native" builds for the GPUs of this machine. Examples:
+#   cmake -S . -B build -DCMAKE_CUDA_ARCHITECTURES=89        # RTX 4070 Ti
+#   cmake -S . -B build -DCMAKE_CUDA_ARCHITECTURES=90        # GH200 / H100
+#   cmake -S . -B build -DCMAKE_CUDA_ARCHITECTURES="89;90"   # both
+# The build sets no host-specific flag (no -march, no x86 intrinsics). So it also works on aarch64 (GH200).
 if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
   set(CMAKE_CUDA_ARCHITECTURES native)
 endif()

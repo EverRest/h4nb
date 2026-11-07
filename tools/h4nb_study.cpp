@@ -16,6 +16,7 @@
 #include "disk.hpp"
 #include "h4nb/h4nb.hpp"
 #include "run_info.hpp"
+#include "input.hpp"
 #include "settings.hpp"
 
 using Clock = std::chrono::steady_clock;
@@ -74,8 +75,7 @@ static int run(int argc, char** argv) try {
       s.fail("diag", why);
     }
   const std::string ic = s.str("ic"), out = s.str("out");
-  const bool binary = ic.size() > 5 && ic.compare(ic.size() - 5, 5, ".snap") == 0;
-  const h4nb::Particles p = binary ? h4nb::read_snapshot(ic) : h4nb::load_text(ic);
+  const h4nb::Particles p = load_input(ic);
   if (p.size() < 2) throw std::runtime_error("the file " + ic + " has less than 2 particles");
   const double G = s.real("G");
   std::vector<double> t_ends = s.reals("t_ends");
