@@ -170,7 +170,7 @@ period=6.283185307179586      # reference period 2*pi for M=1, a=1, G=1
 | `diag` | `dt_max` | Interval of the energy and momentum records. |
 | `snap` | 0 | Snapshot interval. 0 and no `snap_times`: only `snap_final.snap`. |
 | `snap_times` | — | Explicit snapshot times, for example `0,3.125,6.25`. Do not set it with `snap`. |
-| `energy_tol` | 1e-8 | Threshold of the energy verdict. It is printed now. T014 adds the verdict. |
+| `energy_tol` | 1e-8 | Threshold of the energy verdict over the first reference period. |
 | `perf` | 1 | 0: do not write `performance.dat`. |
 
 `h4nb_mkdisk` and `h4nb_order` use the same sources and rules. Their keys did not change. `h4nb_bench` still reads plain `key=value` arguments. T019 moves it to the same system.
@@ -183,7 +183,6 @@ Keys that are still planned:
 | `tile=64` and `tile=256` | T017, T018 |
 | `device_offset`, `mpi_host_staging` (MPI) | T030, T032 |
 | `sizes`, `tiles`, `bpsm`, `fp64_peak` (`h4nb_bench`) | T019 |
-| `etas`, `dt_maxes`, `t_ends` (`h4nb_study`) | T015 |
 
 The full contract with types, defaults and ranges: [`contracts/run-config.md`](specs/001-hermite-nbody-lib/contracts/run-config.md).
 
@@ -217,8 +216,10 @@ build/h4nb_order e=0.5
 # Benchmark.
 build/h4nb_bench n=16384,131072,1024000 devices=0,1
 
-# eta study (today a shell script; T015 replaces it with h4nb_study).
-DT_MAX="0.015625 0.0078125" tools/eta_scan.sh disk128k.snap 6.3125 0.0625 0,1
+# eta study: one integration for each (dt_max, eta), rows for each t_end, in study/study.dat.
+build/h4nb_study ic=disk128k.snap out=study diag=0.0625 etas=0.002,0.001,0.0005,0.00025 \
+  dt_maxes=0.015625,0.0078125 devices=0,1
+# The last line prints the cheapest (eta, dt_max) that meets energy_tol.
 ```
 
 ### 6.2 ✅ With a config file
@@ -288,12 +289,17 @@ Rules:
 | File | Columns |
 |---|---|
 | `energy.dat` | `time K U E rel_err max_rel_err mean_rel_err` |
+| `energy_periods.dat` | `period t_start t_end max_rel_err mean_rel_err complete`: one row for each reference period |
 | `momentum.dat` | `time Px Py Pz Lx Ly Lz dP_rel dL_rel` (changes divided by scales from the initial state) |
 | `timesteps.dat` | `time dt_min dt_max dt_mean mean_active_per_block_step r_min` |
 | `performance.dat` | `time wall_s block_steps active pairs_per_s` |
 | `snap_NNNNNN.snap`, `snap_final.snap` | Binary snapshot: header + `id m x y z vx vy vz` arrays |
 | `config.used` | Final configuration: key, value and source of each key |
 | `run_info.txt` 🚧 | Commit, CUDA, driver, GPUs, ranks, host (T028) |
+
+At the end, `h4nb_run` prints one line that starts with `energy verdict:`. It is `PASS` or `FAIL` for the maximum relative energy error over the first reference period against `energy_tol`, or `INCOMPLETE` when `t_end` is less than the period. For longer runs the line also gives the maximum over all complete periods and the drift. The exit code is 0 for all three verdicts.
+
+`h4nb_study` writes `study.dat`: `eta dt_max t_end max_rel_err mean_rel_err final_rel_err dP_rel dL_rel block_steps pair_evals wall_s pass`. `tools/eta_scan.sh` is now a thin wrapper of `h4nb_study`.
 
 Formats: [`contracts/file-formats.md`](specs/001-hermite-nbody-lib/contracts/file-formats.md).
 

@@ -58,9 +58,9 @@ description: "Task list for h4nb: configuration, speed, multi-node scale and inp
 
 **Independent check**: `h4nb_study config=configs/agn.cfg ic=<small disk>` writes `study.dat` with one row for each grid point and prints the cheapest passing setting.
 
-- [ ] T014 [US2] In `tools/h4nb_run.cpp`, compute the max and mean relative energy error over the reference period (`period`, or the estimate of `period_kind`). Print `PASS` or `FAIL` against `energy_tol`. Print ε and the preset in the report header (spec edge case "Softening is enabled").
-- [ ] T015 [US3] Create `tools/h4nb_study.cpp`. It runs the grid `etas × dt_maxes × t_ends` in one process. It reuses one particle set and constructs one `Simulation` for each grid point. It writes `study.dat` (data-model.md section 9). It prints the cheapest point that passes, by `pair_evals`.
-- [ ] T016 [US3] Register `h4nb_study` in `CMakeLists.txt`. Change `tools/eta_scan.sh` to call `h4nb_study`, or mark it as replaced in a comment.
+- [x] T014 [US2] In `tools/h4nb_run.cpp`, compute the max and mean relative energy error over the reference period (`period`, or the estimate of `period_kind`). Print `PASS` or `FAIL` against `energy_tol`. Print ε and the preset in the report header (spec edge case "Softening is enabled").
+- [x] T015 [US3] Create `tools/h4nb_study.cpp`. It runs the grid `etas × dt_maxes × t_ends` in one process. It reuses one particle set and constructs one `Simulation` for each grid point. It writes `study.dat` (data-model.md section 9). It prints the cheapest point that passes, by `pair_evals`.
+- [x] T016 [US3] Register `h4nb_study` in `CMakeLists.txt`. Change `tools/eta_scan.sh` to call `h4nb_study`, or mark it as replaced in a comment.
 
 **Checkpoint**: US1 to US3 run from config files. The η value for a system comes from a table, not from a guess.
 

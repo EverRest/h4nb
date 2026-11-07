@@ -32,6 +32,7 @@ All tables are text with one header line that starts with `#`.
 | `momentum.dat` | `time Px Py Pz Lx Ly Lz dP_rel dL_rel` |
 | `timesteps.dat` | `time dt_min dt_max dt_mean mean_active_per_block_step r_min` |
 | `performance.dat` | `time wall_s block_steps active pairs_per_s` |
+| `energy_periods.dat` (new) | `period t_start t_end max_rel_err mean_rel_err complete`. One row for each reference period k that the run touches. The row uses the diag points with time in ((k−1)T, kT]. `complete` is 1 when the run reached kT, else 0. A period with no diag point has `nan` in `max_rel_err` and `mean_rel_err`. |
 | `study.dat` (new) | see data-model.md section 9 |
 | `bench.dat` (new) | `N devices tile blocks_per_sm pairs_per_s gflops wall_s` |
 

@@ -9,12 +9,98 @@
 #include <cstdio>
 #include <filesystem>
 #include <string>
+#include <vector>
 #include "disk.hpp"
 #include "h4nb/h4nb.hpp"
 #include "settings.hpp"
 
 using Clock = std::chrono::steady_clock;
 static double since(Clock::time_point t) { return std::chrono::duration<double>(Clock::now() - t).count(); }
+
+// Energy verdict over the reference period T (task T014, FR-012, SC-001). It does not use the Simulation.
+// Period k (k = 1, 2, ...) holds the diag points with time in ((k-1)T, kT]. The point at t = 0 is in no period.
+// A time within a relative tolerance of 1e-12 of kT belongs to period k.
+// The max is over the diag samples only. Diag points seldom land exactly on kT, and the error between two
+// diag points is not seen. A smaller diag gives a finer sample.
+struct PeriodTracker {
+  struct Row {
+    double max = 0, sum = 0;
+    long n = 0;  // Diag points in the period. 0: the period has no sample, and max and mean are nan.
+    bool complete = false;
+  };
+  double T;
+  std::vector<Row> rows;  // rows[k-1] is period k.
+
+  explicit PeriodTracker(double period) : T(period) {}
+  // The period that holds time t. 0 for t = 0.
+  long long index(double t) const {
+    const double q = t / T, r = std::nearbyint(q);
+    if (std::fabs(q - r) <= 1e-12 * std::fmax(1.0, q)) return (long long)r;
+    return (long long)std::ceil(q);
+  }
+  void add(double t, double err) {
+    const long long k = index(t);
+    if (k < 1) return;
+    if (rows.size() < size_t(k)) rows.resize(size_t(k));
+    Row& r = rows[size_t(k - 1)];
+    r.max = std::max(r.max, err);
+    r.sum += err;
+    ++r.n;
+  }
+  // Adds a row for each period that [0, t_end] touches. Period k is complete when kT <= t_end (tolerance 1e-12).
+  void finish(double t_end) {
+    const long long touched = index(t_end);
+    if (rows.size() < size_t(touched)) rows.resize(size_t(touched));
+    const double q = t_end / T, r = std::nearbyint(q);
+    const long long done = std::fabs(q - r) <= 1e-12 * std::fmax(1.0, q) ? (long long)r : (long long)std::floor(q);
+    for (size_t k = 1; k <= rows.size(); ++k) rows[k - 1].complete = (long long)k <= done;
+  }
+  void write(FILE* f) const {
+    std::fprintf(f, "# period t_start t_end max_rel_err mean_rel_err complete\n");
+    for (size_t k = 1; k <= rows.size(); ++k) {
+      const Row& r = rows[k - 1];
+      const double mx = r.n ? r.max : NAN, mean = r.n ? r.sum / double(r.n) : NAN;
+      std::fprintf(f, "%zu %.17g %.17g %.6e %.6e %d\n", k, double(k - 1) * T, double(k) * T, mx, mean, r.complete ? 1 : 0);
+    }
+  }
+  // One line that starts with "energy verdict:". PASS or FAIL needs a complete period 1 with a sample.
+  std::string verdict(double tol, const std::string& src, double eps, double t_end) const {
+    char b[512];
+    std::string line;
+    const Row* p1 = rows.empty() ? nullptr : &rows[0];
+    if (!p1 || !p1->complete || p1->n == 0) {
+      if (p1 && p1->n)
+        std::snprintf(b, sizeof b, "energy verdict: INCOMPLETE max_rel_err=%.3e in (0, t_end=%.17g], energy_tol=%g, T=%.17g (%s), eps=%g. t_end must be >= period",
+                      p1->max, t_end, tol, T, src.c_str(), eps);
+      else
+        std::snprintf(b, sizeof b, "energy verdict: INCOMPLETE no diag point in (0, T], energy_tol=%g, T=%.17g (%s), eps=%g. Set t_end >= period and diag <= period",
+                      tol, T, src.c_str(), eps);
+      line = b;
+    } else {
+      std::snprintf(b, sizeof b, "energy verdict: %s max_rel_err(period 1)=%.3e energy_tol=%g T=%.17g (%s) eps=%g",
+                    p1->max <= tol ? "PASS" : "FAIL", p1->max, tol, T, src.c_str(), eps);
+      line = b;
+      // Runs with two or more complete periods: the max over the complete periods, and the drift.
+      // drift = max_rel_err of the last complete period with a sample minus max_rel_err of period 1.
+      double all = 0, last = p1->max;
+      int complete = 0;
+      for (const Row& r : rows)
+        if (r.complete) {
+          ++complete;
+          if (r.n) all = std::max(all, r.max), last = r.max;
+        }
+      if (complete >= 2) {
+        std::snprintf(b, sizeof b, " periods=%d max_rel_err(complete periods)=%.3e drift=%.3e", complete, all, last - p1->max);
+        line += b;
+      }
+    }
+    if (eps > 0) {
+      std::snprintf(b, sizeof b, " (softened model, eps=%g; the 1e-8 criterion of the spec applies to the unsoftened model)", eps);
+      line += b;
+    }
+    return line;
+  }
+};
 
 // Declares the keys of h4nb_run (contracts/run-config.md section 5).
 static void declare(Settings& s) {
@@ -107,7 +193,6 @@ int main(int argc, char** argv) try {
   c.tile = s.integer("tile");
   c.blocks_per_sm = s.integer("blocks_per_sm");
   const bool perf = s.boolean("perf");
-  // energy_tol is only printed now. Task T014 adds the pass or fail verdict with it.
   const double energy_tol = s.real("energy_tol");
   const std::string ic = s.str("ic"), out = s.str("out");
   const bool binary = ic.size() > 5 && ic.compare(ic.size() - 5, 5, ".snap") == 0;
@@ -146,7 +231,8 @@ int main(int argc, char** argv) try {
   FILE* fm = std::fopen((out + "/momentum.dat").c_str(), "w");
   FILE* ft = std::fopen((out + "/timesteps.dat").c_str(), "w");
   FILE* fp = perf ? std::fopen((out + "/performance.dat").c_str(), "w") : nullptr;
-  if (!fe || !fm || !ft || (perf && !fp)) throw std::runtime_error("cannot write into " + out);
+  FILE* fv = std::fopen((out + "/energy_periods.dat").c_str(), "w");
+  if (!fe || !fm || !ft || !fv || (perf && !fp)) throw std::runtime_error("cannot write into " + out);
   std::fprintf(fe, "# time K U E rel_err max_rel_err mean_rel_err\n");
   std::fprintf(fm, "# time Px Py Pz Lx Ly Lz dP_rel dL_rel  (changes divided by sum m|v| and sum m|r x v| of the initial state, TZ 7.3)\n");
   std::fprintf(ft, "# time dt_min dt_max dt_mean mean_active_per_block_step r_min\n");
@@ -161,6 +247,7 @@ int main(int argc, char** argv) try {
   bool close_warned = false;
   double max_err = 0, err_sum = 0;
   long err_n = 0;
+  PeriodTracker tracker(period);
   double p_scale = 0, l_scale = 0;  // Scales from the initial state. Set to 1 when zero, to avoid division by zero.
   for (size_t i = 0; i < p.size(); ++i) {
     p_scale += p.m[i] * std::sqrt(p.vx[i] * p.vx[i] + p.vy[i] * p.vy[i] + p.vz[i] * p.vz[i]);
@@ -175,6 +262,7 @@ int main(int argc, char** argv) try {
     max_err = std::max(max_err, err);
     err_sum += err;
     ++err_n;
+    tracker.add(d.time, err);
     const double dP = std::sqrt(std::pow(d.P[0] - d0.P[0], 2) + std::pow(d.P[1] - d0.P[1], 2) + std::pow(d.P[2] - d0.P[2], 2));
     const double dL = std::sqrt(std::pow(d.L[0] - d0.L[0], 2) + std::pow(d.L[1] - d0.L[1], 2) + std::pow(d.L[2] - d0.L[2], 2));
     std::fprintf(fe, "%.17g %.17g %.17g %.17g %.6e %.6e %.6e\n", d.time, d.K, d.U, d.E, err, max_err, err_sum / double(err_n));
@@ -204,6 +292,9 @@ int main(int argc, char** argv) try {
     const long long steps = s1.block_steps - s0.block_steps, active = s1.active_total - s0.active_total;
     if (fp) std::fprintf(fp, "%.17g %.6f %lld %lld %.6e\n", sim.time(), wall, steps, active, double(active) * N / wall);
     if (sim.status() & h4nb::kNaN) {
+      tracker.finish(sim.time());
+      tracker.write(fv);
+      std::fclose(fv);
       std::fprintf(stderr, "h4nb_run: non-finite value (NaN or Inf) at t=%g\n", sim.time());
       return 3;  // Exit codes: 1 = runtime error, 2 = settings error, 3 = numerical failure.
     }
@@ -229,8 +320,13 @@ int main(int argc, char** argv) try {
   if (st & h4nb::kClosePair) std::fprintf(stderr, "warning: a pair came closer than r_close\n");
   if (st & h4nb::kDtUnderflow) std::fprintf(stderr, "warning: a particle needs dt < dt_min. Raise max_level.\n");
   std::printf("t=%g: max |dE/E| = %.3e, mean |dE/E| = %.3e\n", sim.time(), max_err, err_sum / double(err_n));
-  for (FILE* f : {fe, fm, ft, fp})
+  tracker.finish(sim.time());
+  tracker.write(fv);
+  std::printf("%s\n", tracker.verdict(energy_tol, period_src, s.real("eps"), sim.time()).c_str());
+  for (FILE* f : {fe, fm, ft, fp, fv})
     if (f) std::fclose(f);
+  // The exit code is 0 for PASS, FAIL and INCOMPLETE. The verdict is a result, not an error.
+  // Scripts read the "energy verdict:" line or energy_periods.dat.
   return 0;
 } catch (const std::exception& e) {
   return settings_main_error("h4nb_run", e);

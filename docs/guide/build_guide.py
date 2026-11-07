@@ -37,7 +37,7 @@ build/h4nb_mkdisk n=127999 frac=0.1 out=disk128k.snap     # prints mean / median
 build/h4nb_run ic=disk128k.snap out=run128k t_end=6.3125 diag=0.0625 eta=0.0005 devices=0,1
 build/h4nb_order e=0.5                                     # Kepler orbit + 4th-order check
 build/h4nb_bench n=16384,131072,1024000 devices=0,1        # speed table
-DT_MAX="0.015625 0.0078125" tools/eta_scan.sh disk128k.snap 6.3125 0.0625 0,1   # eta study
+build/h4nb_study ic=disk128k.snap out=study diag=0.0625 etas=0.001,0.0005,0.00025 devices=0,1   # eta study
 """
 CFG = """
 # configs/agn.cfg
@@ -80,8 +80,8 @@ AVAIL_KEYS = ["ic", "out", "t_end", "eta", "eta_init", "dt_max", "max_level", "e
 AVAIL_DEF = ["—", "—", "—", "0.01", "0.01", "1/64", "40", "0", "block", "0", "0", "0", "dt_max", "0", "-1",
              "0", "0", "0", "mean", "none", "1", "off", "128", "4", "—", "1e-8", "1"]
 PLANNED = [("dissipation=linear_drag, drag_tau, drag_vbg", "T041–T043"), ("tile=64, tile=256", "T017, T018"),
-           ("device_offset, mpi_host_staging", "T030, T032"), ("energy_tol verdict", "T014"),
-           ("sizes, tiles, bpsm, fp64_peak", "T019"), ("etas, dt_maxes, t_ends", "T015")]
+           ("device_offset, mpi_host_staging", "T030, T032"),
+           ("sizes, tiles, bpsm, fp64_peak", "T019")]
 
 DOCS = [("README.md", "README"), (".specify/memory/constitution.md", "Constitution"),
         ("specs/001-hermite-nbody-lib/spec.md", "Spec"), ("specs/001-hermite-nbody-lib/plan.md", "Plan"),
@@ -144,7 +144,7 @@ T["en"] = dict(
     s_cheat="6. Cheat sheet",
     cheat_cfg="Config file ✅", cheat_runcfg="Run with a config file ✅", cheat_mpi="Several nodes 🚧", cheat_cpp="C++ ✅",
     cheat_out="Output files ✅",
-    out=[["energy.dat", "time K U E rel_err max_rel_err mean_rel_err"], ["momentum.dat", "time Px Py Pz Lx Ly Lz dP_rel dL_rel"],
+    out=[["energy.dat", "time K U E rel_err max_rel_err mean_rel_err"], ["energy_periods.dat", "period t_start t_end max_rel_err mean_rel_err complete"], ["study/study.dat", "eta dt_max t_end max_rel_err ... pair_evals wall_s pass"], ["momentum.dat", "time Px Py Pz Lx Ly Lz dP_rel dL_rel"],
          ["timesteps.dat", "time dt_min dt_max dt_mean mean_active r_min"], ["performance.dat", "time wall_s block_steps active pairs_per_s"],
          ["snap_NNNNNN.snap", "binary: header + id m x y z vx vy vz"]],
     s_problems="7. Common problems",

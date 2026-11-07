@@ -17,7 +17,7 @@ find_package(CUDAToolkit REQUIRED)
 add_library(h4nb src/io.cpp src/kernels.cu src/simulation.cu)
 target_include_directories(h4nb PUBLIC include PRIVATE src)
 
-foreach(tool h4nb_run h4nb_mkdisk h4nb_bench h4nb_order)
+foreach(tool h4nb_run h4nb_mkdisk h4nb_bench h4nb_order h4nb_study)
   add_executable(${tool} tools/${tool}.cpp)
   target_include_directories(${tool} PRIVATE tools)
   target_link_libraries(${tool} PRIVATE h4nb)
