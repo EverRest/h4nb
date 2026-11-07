@@ -14,3 +14,17 @@ jobs:
         run: ctest --test-dir build -L cpu --output-on-failure
       - name: CPU-only smoke test
         run: build/h4nb_mkdisk n=1000 frac=0.5 out=/tmp/disk.txt
+  # Task T036. Compile check of the MPI path only (H4NB_MPI=ON). No GPU and no mpirun run here.
+  # The cpu tests do not use MPI. They run to show that the MPI build does not change them.
+  build-mpi:
+    runs-on: ubuntu-latest
+    container: nvidia/cuda:12.6.2-devel-ubuntu24.04
+    env:
+      DEBIAN_FRONTEND: noninteractive
+    steps:
+      - uses: actions/checkout@v4
+      - run: apt-get update -qq && apt-get install -y -qq cmake make g++ openmpi-bin libopenmpi-dev
+      - run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_CUDA_ARCHITECTURES=80 -DH4NB_MPI=ON
+      - run: cmake --build build -j"$(nproc)"
+      - name: CPU tests (no GPU needed)
+        run: ctest --test-dir build -L cpu --output-on-failure

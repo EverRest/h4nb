@@ -43,7 +43,7 @@ The full requirements are in [`spec.md`](specs/001-hermite-nbody-lib/spec.md). T
 | Precision | FP64 for all physical values. No fast-math. No mixed precision. No floating-point atomics. | Accuracy is the contract. Fixed summation order gives bit-identical runs. |
 | Softening | Optional Plummer softening ε. Off by default. Presets: ε = 0.01 (AGN gas), ε = 0.0001 (stars). The same ε is used in the force and in the potential energy. | Softening changes the physical model. It is not a tool to hide an energy error. |
 | Several GPUs | **Split sources** (j-parallel). Each GPU owns N/G particles. The active targets go to every GPU. Each GPU computes the partial force of its own sources. The owner adds the partials in a fixed order. | With block steps only 10² to 10⁴ particles are active. Split targets would give each GPU too few threads. Split sources give each GPU the same work, and the traffic for each step is only O(N_active). |
-| Several nodes 🚧 | One MPI rank per GPU, same j-parallel layout, CUDA-aware MPI ([design](docs/multi-node-design.md)). | The target is 4 to 8 GH200. |
+| Several nodes ✅ (compiled; not run on GPUs) | One MPI rank per GPU, same j-parallel layout, CUDA-aware MPI ([design](docs/multi-node-design.md)). The owner adds the partial forces in rank order. | The target is 4 to 8 GH200. |
 | Diagnostics | Energy, momentum and angular momentum only at sync points (multiples of `dt_max`). Potential on the GPU over unique pairs. Host sums with Neumaier summation. | One energy check costs N²/2 pairs. So it runs at a set interval, not at each step. |
 | Accuracy parameter | η is chosen by measurement for each system. The 1e-8 goal needs about **η = 5e-4** (plan decision D11). | The range 0.001–0.02 of the original TZ does not reach 1e-8. |
 | Speed work | Each optimisation needs a measured gate: a profile or benchmark shows the need. | On GPUs, guesses about speed are often wrong (constitution, principle II). |
@@ -58,7 +58,9 @@ All design decisions with their reasons are in the [detailed plan](docs/superpow
 include/h4nb/h4nb.hpp     Public API: Particles, Config, Diagnostics, Stats, Simulation, snapshot I/O
 src/hermite.cuh           Per-particle math (__host__ __device__): predict, pair force, corrector, Aarseth step, levels
 src/kernels.cuh/.cu       CUDA kernels: predict, gather, force, partial sums, correct, potential
-src/simulation.cu         Simulation: device buffers, block-step loop, multi-GPU exchange, diagnostics
+src/simulation.cu         Simulation: device buffers, block-step loop, multi-GPU exchange, MPI phases, diagnostics
+src/mpi_comm.hpp/.cpp     MPI path (only with -DH4NB_MPI=ON): communicator, device per rank, collectives, MPI_Abort
+src/single_rank.cpp       Rank functions for a build without MPI (one rank)
 src/io.cpp                Text initial conditions, binary snapshots
 tools/                    Thin command-line clients of the public API (h4nb_run, h4nb_mkdisk, h4nb_bench, h4nb_order)
 tests/                    CPU oracle (same math header), CPU and GPU tests
@@ -105,7 +107,7 @@ cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_CUDA_ARCHITECTURES="89;90
 cmake --build build -j
 ```
 
-🚧 MPI build (T029): add `-DH4NB_MPI=ON`. Without this option the build has no MPI dependency.
+✅ MPI build (T029): add `-DH4NB_MPI=ON`. CMake then needs an MPI library (`find_package(MPI)`), for example `openmpi-bin` and `libopenmpi-dev`. Without this option the build has no MPI dependency, and the results are the same bits as before.
 
 Never build with `--use_fast_math` or `-ffast-math`. The NaN checks and the accuracy depend on IEEE arithmetic.
 
@@ -166,9 +168,11 @@ period=6.283185307179586      # reference period 2*pi for M=1, a=1, G=1
 | `max_level` | 40 | 1 to 50. Finest step: `dt_max / 2^max_level`. |
 | `fixed_level` | 0 | Level of all particles in `fixed` mode. Not more than `max_level`. |
 | `r_close` | −1 | Close-pair warning radius. −1: `0.1·R_rms/N^(1/3)`. 0: off. |
-| `devices` | `0` | CUDA device list, for example `0,1`. |
+| `devices` | `0` | CUDA device list, for example `0,1`. One process only. Several ranks ignore it. |
 | `tile` | 128 | Targets per block in the force and potential kernels: 64, 128 or 256. Measure the best value with `h4nb_bench`. |
 | `blocks_per_sm` | 4 | 1 to 16. Target blocks per SM for the source split. |
+| `device_offset` | 0 | MPI only. The GPU of a rank is `(local rank + device_offset) % device count`. |
+| `mpi_host_staging` | 0 | MPI only. 1: copy the MPI buffers through pinned host memory. Use 1 when the MPI library is not CUDA-aware. |
 | `diag` | `dt_max` | Interval of the energy and momentum records. |
 | `snap` | 0 | Snapshot interval. 0 and no `snap_times`: only `snap_final.snap`. |
 | `snap_times` | — | Explicit snapshot times, for example `0,3.125,6.25`. Do not set it with `snap`. |
@@ -176,12 +180,6 @@ period=6.283185307179586      # reference period 2*pi for M=1, a=1, G=1
 | `perf` | 1 | 0: do not write `performance.dat`. |
 
 `h4nb_mkdisk`, `h4nb_order` and `h4nb_bench` use the same sources and rules. `h4nb_bench` measures the grid `sizes` × `tiles` × `bpsm` and writes `<out>/bench.dat` (default `out=bench`). Set `fp64_peak` (TFLOP/s) to get the column `pct_peak`. Run `h4nb_bench help=1` for all keys. The old key `n` is gone. Use `sizes`.
-
-Keys that are still planned:
-
-| Keys | Task |
-|---|---|
-| `device_offset`, `mpi_host_staging` (MPI) | T030, T032 |
 
 The full contract with types, defaults and ranges: [`contracts/run-config.md`](specs/001-hermite-nbody-lib/contracts/run-config.md).
 
@@ -229,7 +227,16 @@ H4NB_ETA=0.00025 build/h4nb_run config=configs/agn.cfg ic=disk128k.snap out=run_
 build/h4nb_run config=run128k/config.used out=run128k_repeat        # repeat a run exactly
 ```
 
-### 6.3 🚧 Several nodes with MPI (T029 to T036)
+### 6.3 ✅ Several nodes with MPI (T029 to T036; compiled, not run on GPUs)
+
+Status: the MPI path compiles (`-DH4NB_MPI=ON`, also in CI). The error paths before the GPU ran under `mpirun -np 2` in a container without a GPU. The GPU path under MPI has not run yet. Do run A9 of the [quickstart](specs/001-hermite-nbody-lib/quickstart.md) on the cluster before you trust the results.
+
+Build:
+
+```bash
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_CUDA_ARCHITECTURES=90 -DH4NB_MPI=ON
+cmake --build build -j
+```
 
 One rank per GPU. The keys stay the same.
 
@@ -242,6 +249,15 @@ mpirun -np 8 --map-by ppr:4:node --bind-to core \
 srun --ntasks-per-node=4 --gpus-per-task=1 --gpu-bind=single:1 \
   build/h4nb_run config=configs/gh200.cfg ic=disk1m.snap out=run1m t_end=6.3125
 ```
+
+Rules:
+
+- All ranks read the settings and the input. Only rank 0 writes files (`config.used`, `run_info.txt`, the `.dat` files and the snapshots). `run_info.txt` has `ranks: <count>`, the MPI library and one `rank_<r>` line for each rank (host, local rank, GPU).
+- The `devices` key is ignored. Each rank uses one GPU: device 0 when the launcher shows one GPU to each task, otherwise `(local rank + device_offset) % device count`. The run stops with an error when a node has more ranks than GPUs.
+- Set `mpi_host_staging=1` when the MPI library is not CUDA-aware.
+- Bit-identical results need the same build, rank count and GPU model. Compare runs with different rank counts with the tolerance of the design (1e-10 force path, 1e-12 diagnostics). The energy values differ from the one-process values in the last bits.
+- Errors: a settings, input or file error, and a NaN, stop all ranks with the normal exit code (1, 2 or 3). A CUDA error, an MPI error or an error on one rank only stops all ranks with `MPI_Abort`. The message names the rank.
+- `h4nb_study` and `h4nb_bench` run as one process only. With more than one rank they stop with exit code 2.
 
 Launch details: [`docs/multi-node-design.md`](docs/multi-node-design.md) section 3.
 
@@ -297,6 +313,7 @@ Rules:
 - `advance_to(t)` and `diagnostics()` work only at multiples of `dt_max`.
 - `diagnostics()` costs N²/2 pair evaluations. Call it at an interval.
 - `Simulation` is not copyable. One object owns the GPU buffers.
+- ✅ Several ranks (MPI build, compiled, not run on GPUs): create `h4nb::RankScope scope(argc, argv);` at the start of `main` (or call `MPI_Init` yourself). Each rank constructs the `Simulation` with the full particle set and the same `Config`. All ranks call each member function in the same order. `state()`, `levels()`, `status()`, `stats()` and `diagnostics()` give the same values on every rank. Write files on `h4nb::rank() == 0` only. `h4nb::max_over_ranks()` lets the ranks agree on an error. The header has no MPI type.
 - ✅ `Config::tile` (64, 128 or 256) and `Config::blocks_per_sm`. The constructor checks every `Config` field and throws `std::invalid_argument` with the field name. ✅ `Config::dissipation`, `drag_tau`, `drag_vbg` and `Diagnostics::W_diss` (the work of the drag since t = 0). ✅ `h4nb::build_info()` gives the commit, the build type, the architectures and the CUDA versions. The defaults give the current results bit for bit. See [`contracts/public-api.md`](specs/001-hermite-nbody-lib/contracts/public-api.md).
 
 ## 8. Output files

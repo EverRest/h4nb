@@ -1,5 +1,6 @@
 // h4nb::build_info() (task T027, data-model.md section 8, docs/cuda-best-practices.md section 6).
 // CMake gives H4NB_GIT_COMMIT, H4NB_BUILD_TYPE and H4NB_CUDA_ARCHITECTURES to this file only.
+// CMake also gives H4NB_HAVE_MPI when the build option H4NB_MPI is ON.
 // The commit is the commit at configure time. A later commit without a new configure step does not change it.
 #include <cuda_runtime.h>
 #include <string>
@@ -40,6 +41,11 @@ std::string build_info() {
   s += "host_compiler: gcc " __VERSION__ "\n";
 #else
   s += "host_compiler: " __VERSION__ "\n";
+#endif
+#ifdef H4NB_HAVE_MPI
+  s += "mpi: on\n";  // Build option H4NB_MPI=ON. run_info.txt gives the MPI library version in mpi_library.
+#else
+  s += "mpi: off\n";
 #endif
   return s;
 }

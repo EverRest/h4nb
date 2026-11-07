@@ -4,6 +4,7 @@
 #include <climits>
 #include <cmath>
 #include <cstring>
+#include <exception>
 #include <set>
 #include <stdexcept>
 #include <string>
@@ -11,6 +12,9 @@
 #include <vector>
 #include "h4nb/h4nb.hpp"
 #include "kernels.cuh"
+#ifdef H4NB_HAVE_MPI
+#include "mpi_comm.hpp"  // MPI-free interface. Only src/mpi_comm.cpp includes mpi.h.
+#endif
 
 namespace h4nb {
 namespace {
@@ -95,6 +99,7 @@ void validate(const Config& c) {
     bad("fixed_level must be in [0, max_level] in Fixed mode.");
   if (!std::isfinite(c.r2_close) || !(c.r2_close >= 0)) bad("r2_close must be finite and >= 0.");
   if (c.devices.empty()) bad("devices must not be empty.");
+  if (c.device_offset < 0) bad("device_offset must be >= 0.");
   if (c.tile != 64 && c.tile != 128 && c.tile != 256) bad("tile must be 64, 128 or 256.");
   if (c.blocks_per_sm < 1 || c.blocks_per_sm > 16) bad("blocks_per_sm must be in [1, 16].");
   if (c.dissipation != Dissipation::Off && c.dissipation != Dissipation::LinearDrag)
@@ -130,6 +135,11 @@ struct Dev {
   size_t tmp_bytes = 0;
   int64_t* h_min = nullptr;              // Pinned host memory.
   int* h_nsel = nullptr;                 // Pinned host memory.
+  // MPI path only (pinned host memory). h_status: status word for the reduce of phase 1.
+  // The others: staging buffers for an MPI library that is not CUDA-aware (Config::mpi_host_staging).
+  unsigned* h_status = nullptr;
+  d4 *h_tx = nullptr, *h_tv = nullptr, *h_fa = nullptr, *h_fj = nullptr, *h_ra = nullptr, *h_rj = nullptr;
+  int* h_tid = nullptr;
   std::vector<void*> mem;
 
   template <class T>
@@ -149,6 +159,13 @@ struct Simulation::Impl {
   std::vector<int64_t> ids;
   std::vector<Dev> d;
   Stats st;
+  // The particle set has P parts [base, base + n). One process: one part for each device, P = devices.size().
+  // MPI (several ranks): one part for each rank, P = ranks(). Then d holds one device, the GPU of this rank.
+  bool mpi = false;
+  int P = 1;
+  int part0 = 0;                 // Part of d[0]: 0 for one process, the rank for MPI.
+  bool halted = false;           // MPI: a rank has set kNaN. advance_to() stops at the next block step.
+  std::vector<int> pbase, pn;    // MPI: base and size of each part, in rank order. The counts of the collectives.
 
   static void use(const Dev& e) { H4_CUDA(cudaSetDevice(e.id)); }
   void sync() {
@@ -159,26 +176,92 @@ struct Simulation::Impl {
   }
 
   Impl(const Particles& p, const Config& cfg) : c(cfg), N(int(p.size())) {
+#ifdef H4NB_HAVE_MPI
+    if (comm::active()) {
+      construct_mpi(p);
+      return;
+    }
+#endif
+    setup(p);
+    step(true);
+    sync();
+  }
+
+#ifdef H4NB_HAVE_MPI
+  // MPI constructor (task T034, hybrid error path). The checks and the allocations are local to each rank.
+  // An agreement (MPI_MAX of an error code) follows them. Thus an error on one rank throws on all ranks,
+  // before the first collective of step(). An error after the agreement stops all ranks (comm::fatal).
+  void construct_mpi(const Particles& p) {
+    mpi = true;
+    P = comm::size();
+    part0 = comm::rank();
+    int code = 0;
+    std::exception_ptr err;
+    try {
+      setup(p);
+    } catch (const std::invalid_argument&) {
+      code = 2, err = std::current_exception();
+    } catch (...) {
+      code = 1, err = std::current_exception();
+    }
+    int all = 0;
+    try {
+      all = comm::max_int(code);
+    } catch (const std::exception& ex) {
+      comm::fatal(ex.what());
+    }
+    if (all) {
+      release();
+      if (err) std::rethrow_exception(err);
+      const std::string why = "Simulation: the setup failed on another rank. See the message of that rank.";
+      if (all == 2) throw std::invalid_argument(why);
+      throw std::runtime_error(why);
+    }
+    try {
+      step(true);
+      sync();
+    } catch (const std::exception& ex) {
+      comm::fatal(ex.what());
+    }
+  }
+#endif
+
+  // Checks the input, selects the devices, allocates and uploads. It does not run a collective.
+  void setup(const Particles& p) {
     validate(c);
-    const int G = int(c.devices.size());
+    const int G = mpi ? 1 : int(c.devices.size());
+    if (!mpi) P = G;
     const size_t n = p.size();
-    if (N < std::max(2, G)) throw std::invalid_argument("Use at least max(2, devices) particles.");
+    if (N < std::max(2, P)) throw std::invalid_argument("Use at least max(2, devices) particles (MPI: max(2, ranks)).");
     if (p.id.size() != n || p.x.size() != n || p.y.size() != n || p.z.size() != n || p.vx.size() != n ||
         p.vy.size() != n || p.vz.size() != n)
       throw std::invalid_argument("The Particles arrays have different sizes.");
-    int count = 0;  // The device ids need the CUDA runtime. So check them after the pure checks.
-    H4_CUDA(cudaGetDeviceCount(&count));
-    for (int id : c.devices)
-      if (id < 0 || id >= count)
-        bad("devices: id " + std::to_string(id) + " is not in [0, " + std::to_string(count) + ").");
+    int mpi_dev = 0;  // MPI: the GPU of this rank (docs/multi-node-design.md section 3.3). devices is not used.
+#ifdef H4NB_HAVE_MPI
+    if (mpi) {
+      mpi_dev = comm::select_device(c.device_offset);
+      for (int k = 0; k < P; ++k) {
+        pbase.push_back(int(int64_t(N) * k / P));
+        pn.push_back(int(int64_t(N) * (k + 1) / P) - pbase.back());
+      }
+    }
+#endif
+    if (!mpi) {
+      int count = 0;  // The device ids need the CUDA runtime. So check them after the pure checks.
+      H4_CUDA(cudaGetDeviceCount(&count));
+      for (int id : c.devices)
+        if (id < 0 || id >= count)
+          bad("devices: id " + std::to_string(id) + " is not in [0, " + std::to_string(count) + ").");
+    }
     tick = c.dt_max / std::ldexp(1.0, c.max_level);
     ids = p.id;
     d.resize(size_t(G));
     for (int g = 0; g < G; ++g) {
       Dev& e = d[size_t(g)];
-      e.id = c.devices[size_t(g)];
-      e.base = int(int64_t(N) * g / G);
-      e.n = int(int64_t(N) * (g + 1) / G) - e.base;
+      const int part = part0 + g;
+      e.id = mpi ? mpi_dev : c.devices[size_t(g)];
+      e.base = int(int64_t(N) * part / P);
+      e.n = int(int64_t(N) * (part + 1) / P) - e.base;
       use(e);
       H4_CUDA(cudaDeviceGetAttribute(&e.sms, cudaDevAttrMultiProcessorCount, e.id));
       H4_CUDA(cudaStreamCreate(&e.s));
@@ -196,7 +279,7 @@ struct Simulation::Impl {
       e.pcap = NN + size_t(c.blocks_per_sm) * size_t(e.sms) * size_t(c.tile);
       e.pa = e.alloc<d4>(e.pcap); e.pj = e.alloc<d4>(e.pcap);
       e.fa = e.alloc<d4>(NN); e.fj = e.alloc<d4>(NN);
-      e.ra = e.alloc<d4>(size_t(G) * nn); e.rj = e.alloc<d4>(size_t(G) * nn);
+      e.ra = e.alloc<d4>(size_t(P) * nn); e.rj = e.alloc<d4>(size_t(P) * nn);  // One row for each part.
       e.ca = e.alloc<d4>(nn); e.cj = e.alloc<d4>(nn);
       e.phi = e.alloc<double>(NN);
       e.wd = e.alloc<double>(nn);  // Also with Off: n doubles are cheap, and the pointer is then always valid.
@@ -208,13 +291,27 @@ struct Simulation::Impl {
       e.tmp = e.alloc<char>(e.tmp_bytes);
       H4_CUDA(cudaMallocHost(&e.h_min, sizeof(int64_t)));
       H4_CUDA(cudaMallocHost(&e.h_nsel, sizeof(int)));
+      if (mpi) {
+        H4_CUDA(cudaMallocHost(&e.h_status, sizeof(unsigned)));
+        if (c.mpi_host_staging) {
+          // ponytail: about N * 132 B + 2 * P * n * 32 B of pinned memory for each rank. Upgrade: buffers of
+          // the size of the largest active set, if the pinned memory is measured as a problem.
+          H4_CUDA(cudaMallocHost(&e.h_tx, NN * sizeof(d4)));
+          H4_CUDA(cudaMallocHost(&e.h_tv, NN * sizeof(d4)));
+          H4_CUDA(cudaMallocHost(&e.h_tid, NN * sizeof(int)));
+          H4_CUDA(cudaMallocHost(&e.h_fa, NN * sizeof(d4)));
+          H4_CUDA(cudaMallocHost(&e.h_fj, NN * sizeof(d4)));
+          H4_CUDA(cudaMallocHost(&e.h_ra, size_t(P) * nn * sizeof(d4)));
+          H4_CUDA(cudaMallocHost(&e.h_rj, size_t(P) * nn * sizeof(d4)));
+        }
+      }
       std::vector<d4> hx(nn), hv(nn);
       for (int k = 0; k < e.n; ++k) {
         const size_t i = size_t(e.base + k);
         hx[size_t(k)] = d4{p.x[i], p.y[i], p.z[i], p.m[i]};
         hv[size_t(k)] = d4{p.vx[i], p.vy[i], p.vz[i], 0.0};
       }
-      if (c.fixed_center && g == 0) hv[0] = d4{0, 0, 0, 0};
+      if (c.fixed_center && part == 0) hv[0] = d4{0, 0, 0, 0};
       H4_CUDA(cudaMemcpy(e.x, hx.data(), nn * sizeof(d4), cudaMemcpyHostToDevice));
       H4_CUDA(cudaMemcpy(e.v, hv.data(), nn * sizeof(d4), cudaMemcpyHostToDevice));
       H4_CUDA(cudaMemset(e.a, 0, nn * sizeof(d4)));
@@ -239,26 +336,54 @@ struct Simulation::Impl {
           if (r != cudaSuccess && r != cudaErrorPeerAccessAlreadyEnabled) ck(r, "cudaDeviceEnablePeerAccess");
           (void)cudaGetLastError();
         }
-    step(true);
-    sync();
   }
 
-  ~Impl() {
+  ~Impl() { release(); }
+
+  // Frees the device and host memory. It does not throw. A second call does nothing.
+  void release() {
     for (auto& e : d) {
       cudaSetDevice(e.id);
-      cudaStreamSynchronize(e.s);
+      if (e.s) cudaStreamSynchronize(e.s);
       for (void* m : e.mem) cudaFree(m);
-      cudaFreeHost(e.h_min);
-      cudaFreeHost(e.h_nsel);
-      cudaEventDestroy(e.ev_tx);
-      cudaEventDestroy(e.ev_f);
-      cudaStreamDestroy(e.s);
+      e.mem.clear();
+      for (void* h : {(void*)e.h_min, (void*)e.h_nsel, (void*)e.h_status, (void*)e.h_tx, (void*)e.h_tv,
+                      (void*)e.h_tid, (void*)e.h_fa, (void*)e.h_fj, (void*)e.h_ra, (void*)e.h_rj})
+        if (h) cudaFreeHost(h);
+      if (e.ev_tx) cudaEventDestroy(e.ev_tx);
+      if (e.ev_f) cudaEventDestroy(e.ev_f);
+      if (e.s) cudaStreamDestroy(e.s);
+      e = Dev{};
     }
+    d.clear();
+    cudaGetLastError();
+  }
+
+  // MPI: runs f. An exception on one rank can leave the other ranks in a collective. Thus it stops all ranks
+  // (comm::fatal, MPI_Abort). One process: runs f and lets an exception pass.
+  template <class F>
+  auto guard(F&& f) -> decltype(f()) {
+#ifdef H4NB_HAVE_MPI
+    if (mpi) {
+      try {
+        return f();
+      } catch (const std::exception& ex) {
+        comm::fatal(ex.what());
+      }
+    }
+#endif
+    return f();
   }
 
   // One block step. See "How a block step works" in the plan.
   // ponytail: two host syncs per block step (about 10 to 30 us). This matters only when NA is very small. Upgrade: CUDA graphs or device-side scheduling (O4).
   void step(bool init) {
+#ifdef H4NB_HAVE_MPI
+    if (mpi) {
+      step_mpi(init);
+      return;
+    }
+#endif
     const int G = int(d.size());
     int64_t Tn = 0;
     if (!init) {
@@ -348,6 +473,112 @@ struct Simulation::Impl {
     ++st.block_steps;
     st.active_total += NA;
   }
+
+#ifdef H4NB_HAVE_MPI
+  // One block step on several ranks (task T031, docs/multi-node-design.md section 1.1). Each rank has one device
+  // and owns the part [base, base + n). The four collective phases replace the peer copies of step():
+  //   1. MPI_Allreduce (MIN) of {Tn, no-NaN flag}. Both values are integers, so the result does not depend on the order.
+  //   2. MPI_Allgather of the active counts, then MPI_Allgatherv of the active targets. Block r goes to the offset
+  //      off[r], the sum of the counts of the ranks before r. So the target list is in rank order, as in step().
+  //   3. Each rank computes the force of its sources on all NA targets. MPI_Alltoallv sends the slice of each
+  //      owner. Row h of ra and rj on the owner comes from rank h.
+  //   4. sum_partials adds the rows 0, 1, ..., P-1 in this order. Then correct_kernel runs.
+  // No floating-point value is added by MPI. The sums are those of step() with the rank in place of the device.
+  // Thus one process with devices={0,1} and two ranks can give the same bits (same split, same device model).
+  // Without Config::mpi_host_staging, MPI gets device pointers (CUDA-aware MPI). The stream is synchronized first.
+  // ponytail: three host syncs and five collectives for each block step. Upgrade: gated O4 (CUDA graphs) after a
+  // measurement on the cluster.
+  void step_mpi(bool init) {
+    Dev& e = d[0];
+    const int r = part0;
+    const bool stage = c.mpi_host_staging;
+    use(e);
+    int64_t Tn = 0;
+    if (!init) {
+      H4_CUDA(cub::DeviceReduce::Min(e.tmp, e.tmp_bytes, e.next, e.dmin, e.n, e.s));
+      H4_CUDA(cudaMemcpyAsync(e.h_min, e.dmin, sizeof(int64_t), cudaMemcpyDeviceToHost, e.s));
+      H4_CUDA(cudaMemcpyAsync(e.h_status, e.status, sizeof(unsigned), cudaMemcpyDeviceToHost, e.s));
+      H4_CUDA(cudaStreamSynchronize(e.s));
+      // Phase 1 also carries the error flag (task T034): v[1] is 0 on a rank with kNaN. MIN gives 0 on all ranks.
+      int64_t v[2] = {*e.h_min, (*e.h_status & kNaN) ? 0 : 1};
+      comm::min_i64(v, 2);
+      if (v[1] == 0) {  // All ranks see the same value. All ranks stop at the same block step.
+        halted = true;
+        return;
+      }
+      Tn = v[0];
+    }
+    predict_kernel<<<blocks(e.n, 256), 256, 0, e.s>>>(e.n, e.x, e.v, e.a, e.j, e.t, Tn, tick, e.xp, e.vp);
+    size_t bytes = e.tmp_bytes;
+    H4_CUDA(cub::DeviceSelect::If(e.tmp, bytes, thrust::counting_iterator<int>(0), e.act, e.nsel, e.n,
+                                  IsActive{e.next, Tn}, e.s));
+    H4_CUDA(cudaMemcpyAsync(e.h_nsel, e.nsel, sizeof(int), cudaMemcpyDeviceToHost, e.s));
+    H4_CUDA(cudaStreamSynchronize(e.s));
+    // Phase 2: the counts, then the targets in rank order.
+    std::vector<int> na(P), off(P), rc(P), rd(P);  // Use (P). Do not use (size_t(P)): see step().
+    comm::allgather_int(*e.h_nsel, na.data());
+    int NA = 0;
+    for (int h = 0; h < P; ++h) off[size_t(h)] = NA, NA += na[size_t(h)];
+    const int m = na[size_t(r)], o = off[size_t(r)];
+    if (m) gather_kernel<<<blocks(m, 256), 256, 0, e.s>>>(m, e.act, e.xp, e.vp, e.base, e.tx + o, e.tv + o, e.tid + o);
+    if (stage) {
+      copy(e.h_tx + o, e.tx + o, size_t(m) * sizeof(d4), e.s);
+      copy(e.h_tv + o, e.tv + o, size_t(m) * sizeof(d4), e.s);
+      copy(e.h_tid + o, e.tid + o, size_t(m) * sizeof(int), e.s);
+    }
+    H4_CUDA(cudaStreamSynchronize(e.s));
+    H4_CUDA(cudaGetLastError());
+    comm::allgatherv_d4(stage ? (void*)e.h_tx : (void*)e.tx, na.data(), off.data());
+    comm::allgatherv_d4(stage ? (void*)e.h_tv : (void*)e.tv, na.data(), off.data());
+    comm::allgatherv_int(stage ? e.h_tid : e.tid, na.data(), off.data());
+    if (stage) {
+      copy(e.tx, e.h_tx, size_t(NA) * sizeof(d4), e.s);
+      copy(e.tv, e.h_tv, size_t(NA) * sizeof(d4), e.s);
+      copy(e.tid, e.h_tid, size_t(NA) * sizeof(int), e.s);
+    }
+    // Phase 3: the force of the own sources on all targets, then the slice of each owner.
+    const Split sp = split(NA, e.n, e.sms, c.blocks_per_sm, c.tile);
+    launch_force(c.tile, dim3(unsigned(blocks(NA, c.tile)), unsigned(sp.nj)), e.s, NA, e.tx, e.tv, e.tid, e.n, e.xp,
+                 e.vp, e.base, sp.chunk, c.eps2, e.pa, e.pj);
+    sum_partials<<<blocks(NA, 256), 256, 0, e.s>>>(NA, sp.nj, e.pa, e.pj, e.fa, e.fj);
+    if (stage) {
+      copy(e.h_fa, e.fa, size_t(NA) * sizeof(d4), e.s);
+      copy(e.h_fj, e.fj, size_t(NA) * sizeof(d4), e.s);
+    }
+    H4_CUDA(cudaStreamSynchronize(e.s));
+    H4_CUDA(cudaGetLastError());
+    for (int h = 0; h < P; ++h) rc[size_t(h)] = m, rd[size_t(h)] = h * m;  // Row h comes from rank h.
+    comm::alltoallv_d4(stage ? (void*)e.h_fa : (void*)e.fa, na.data(), off.data(), stage ? (void*)e.h_ra : (void*)e.ra,
+                       rc.data(), rd.data());
+    comm::alltoallv_d4(stage ? (void*)e.h_fj : (void*)e.fj, na.data(), off.data(), stage ? (void*)e.h_rj : (void*)e.rj,
+                       rc.data(), rd.data());
+    // Phase 4: the owner adds the rows in rank order. Then it corrects its particles.
+    if (m) {
+      if (stage) {
+        copy(e.ra, e.h_ra, size_t(P) * size_t(m) * sizeof(d4), e.s);
+        copy(e.rj, e.h_rj, size_t(P) * size_t(m) * sizeof(d4), e.s);
+      }
+      const StepParams prm = make_params(c, tick, Tn, init);
+      sum_partials<<<blocks(m, 256), 256, 0, e.s>>>(m, P, e.ra, e.rj, e.ca, e.cj);
+      const int center = (c.fixed_center && r == 0) ? 0 : -1, nodrag = r == 0 ? 0 : -1;
+      if (c.dissipation == Dissipation::LinearDrag)
+        correct_kernel<Dissipation::LinearDrag><<<blocks(m, 256), 256, 0, e.s>>>(
+            m, e.act, e.ca, e.cj, prm, center, nodrag, e.vp, e.x, e.v, e.a, e.j, e.t, e.next, e.level, e.status,
+            e.minr2, e.wd);
+      else
+        correct_kernel<Dissipation::Off><<<blocks(m, 256), 256, 0, e.s>>>(
+            m, e.act, e.ca, e.cj, prm, center, nodrag, e.vp, e.x, e.v, e.a, e.j, e.t, e.next, e.level, e.status,
+            e.minr2, e.wd);
+    }
+    H4_CUDA(cudaGetLastError());
+    T = Tn;
+    ++st.block_steps;
+    st.active_total += NA;
+  }
+
+  Particles state_mpi();          // Below. Collective.
+  Diagnostics diagnostics_mpi();  // Below. Collective.
+#endif
 };
 
 Simulation::Simulation(const Particles& p, const Config& c) : impl_(std::make_unique<Impl>(p, c)) {}
@@ -361,6 +592,15 @@ void Simulation::advance_to(double t) {
   if (r < 0 || r >= std::ldexp(1.0, 62 - m.c.max_level)) throw std::invalid_argument("advance_to: t out of range");
   const int64_t target = int64_t(r) << m.c.max_level;
   if (target < m.T) throw std::invalid_argument("advance_to: t is before time()");
+#ifdef H4NB_HAVE_MPI
+  if (m.mpi) {  // The checks above give the same result on all ranks. So they throw on all ranks or on none.
+    m.guard([&] {
+      while (m.T < target && !m.halted) m.step(false);  // Stops early when a rank has set kNaN (task T034).
+      m.sync();
+    });
+    return;
+  }
+#endif
   while (m.T < target) m.step(false);
   m.sync();
 }
@@ -368,6 +608,18 @@ void Simulation::advance_to(double t) {
 double Simulation::time() const { return double(impl_->T) * impl_->tick; }
 Stats Simulation::stats() const {
   Impl& m = *impl_;
+#ifdef H4NB_HAVE_MPI
+  if (m.mpi)  // The counts are the same on all ranks (NA is global). min_r2: MIN over the ranks, exact.
+    return m.guard([&] {
+      m.sync();
+      Stats s = m.st;
+      unsigned long long b = 0;
+      H4_CUDA(cudaMemcpy(&b, m.d[0].minr2, sizeof b, cudaMemcpyDeviceToHost));
+      std::memcpy(&s.min_r2, &b, sizeof b);
+      s.min_r2 = comm::min_double(s.min_r2);
+      return s;
+    });
+#endif
   m.sync();
   Stats s = m.st;
   for (auto& e : m.d) {
@@ -383,6 +635,11 @@ Stats Simulation::stats() const {
 
 Particles Simulation::state() const {
   Impl& m = *impl_;
+#ifdef H4NB_HAVE_MPI
+  // MPI: each rank downloads its part. MPI_Allgatherv gives every rank the full set in global order.
+  // ponytail: N * 64 B to every rank. Upgrade: MPI_Gatherv to rank 0 only, if a measurement needs it.
+  if (m.mpi) return m.guard([&] { return m.state_mpi(); });
+#endif
   m.sync();
   Particles p;
   p.resize(size_t(m.N));
@@ -406,6 +663,19 @@ Particles Simulation::state() const {
 
 std::vector<int> Simulation::levels() const {
   Impl& m = *impl_;
+#ifdef H4NB_HAVE_MPI
+  if (m.mpi)  // Every rank gets all levels in global order (MPI_Allgatherv).
+    return m.guard([&] {
+      m.sync();
+      const Dev& e = m.d[0];
+      Impl::use(e);
+      const size_t NN = size_t(m.N);
+      std::vector<int> out(NN);
+      H4_CUDA(cudaMemcpy(out.data() + e.base, e.level, size_t(e.n) * sizeof(int), cudaMemcpyDeviceToHost));
+      comm::allgatherv_int(out.data(), m.pn.data(), m.pbase.data());
+      return out;
+    });
+#endif
   m.sync();
   std::vector<int> out(size_t(m.N));
   for (auto& e : m.d) {
@@ -417,6 +687,16 @@ std::vector<int> Simulation::levels() const {
 
 unsigned Simulation::status() const {
   Impl& m = *impl_;
+#ifdef H4NB_HAVE_MPI
+  if (m.mpi)  // MPI_BOR over the ranks: every rank gets the same bits.
+    return m.guard([&] {
+      m.sync();
+      unsigned v = 0;
+      Impl::use(m.d[0]);
+      H4_CUDA(cudaMemcpy(&v, m.d[0].status, sizeof v, cudaMemcpyDeviceToHost));
+      return comm::bor(v);
+    });
+#endif
   m.sync();
   unsigned s = 0;
   for (auto& e : m.d) {
@@ -434,6 +714,9 @@ unsigned Simulation::status() const {
 // ponytail: downloads N doubles per device and the state. This is fine at a diagnostic interval. Upgrade: GPU tree reduction.
 Diagnostics Simulation::diagnostics() {
   Impl& m = *impl_;
+#ifdef H4NB_HAVE_MPI
+  if (m.mpi) return m.guard([&] { return m.diagnostics_mpi(); });
+#endif
   const Particles p = state();
   const int G = int(m.d.size());
   for (auto& e : m.d) {  // All-gather every position into tx, in global order.
@@ -487,5 +770,92 @@ Diagnostics Simulation::diagnostics() {
   }
   return r;
 }
+
+#ifdef H4NB_HAVE_MPI
+// Diagnostics on several ranks (task T033, docs/multi-node-design.md section 4.1).
+// 1. state() gives every rank all positions (MPI_Allgatherv). Each rank uploads them to tx in global order.
+// 2. Each rank runs the potential kernel of the one-process path for its own sources: phi_r(i) is the sum over the
+//    sources j > i of this rank. The work of rank r is about N * n_r - n_r^2 / 2 pairs, at most N^2 / P pairs.
+//    This is within the bound of the design (N^2 / P for each rank), with the same kernel as one process.
+// 3. Each rank computes Neumaier partial sums in index order: U_r = sum_i m_i phi_r(i) over all i, and K, P, L
+//    and W_diss over its own particles.
+// 4. MPI_Allgather gives every rank the 9 partials of all ranks. Each rank adds them in rank order (Neumaier).
+//    Thus all ranks get the same bits, and the sum order is fixed. MPI does not add the values.
+// The values differ from the one-process values in the last bits, because the sum order differs
+// (docs/multi-node-design.md section 2.3: tolerance 1e-12).
+Particles Simulation::Impl::state_mpi() {
+  sync();
+  const Dev& e = d[0];
+  use(e);
+  const size_t NN = size_t(N);
+  std::vector<d4> hx(NN), hv(NN);  // Do not write hx(size_t(N)): it parses as a function declaration.
+  H4_CUDA(cudaMemcpy(hx.data() + e.base, e.x, size_t(e.n) * sizeof(d4), cudaMemcpyDeviceToHost));
+  H4_CUDA(cudaMemcpy(hv.data() + e.base, e.v, size_t(e.n) * sizeof(d4), cudaMemcpyDeviceToHost));
+  comm::allgatherv_d4(hx.data(), pn.data(), pbase.data());
+  comm::allgatherv_d4(hv.data(), pn.data(), pbase.data());
+  Particles p;
+  p.resize(size_t(N));
+  p.id = ids;
+  for (size_t i = 0; i < NN; ++i) {
+    const d4 &x = hx[i], &v = hv[i];
+    p.m[i] = x.w; p.x[i] = x.x; p.y[i] = x.y; p.z[i] = x.z;
+    p.vx[i] = v.x; p.vy[i] = v.y; p.vz[i] = v.z;
+  }
+  return p;
+}
+
+Diagnostics Simulation::Impl::diagnostics_mpi() {
+  Impl& m = *this;
+  const Particles p = state_mpi();
+  Dev& e = m.d[0];
+  Impl::use(e);
+  const size_t NN = size_t(m.N);
+  std::vector<d4> hx(NN);
+  for (size_t i = 0; i < NN; ++i) hx[i] = d4{p.x[i], p.y[i], p.z[i], p.m[i]};
+  H4_CUDA(cudaMemcpyAsync(e.tx, hx.data(), NN * sizeof(d4), cudaMemcpyHostToDevice, e.s));
+  const Split sp = split(m.N, e.n, e.sms, m.c.blocks_per_sm, m.c.tile);
+  double* pp = reinterpret_cast<double*>(e.pa);  // N * nj doubles fit in pcap d4 entries.
+  launch_potential(m.c.tile, dim3(unsigned(blocks(m.N, m.c.tile)), unsigned(sp.nj)), e.s, m.N, e.tx, e.n, e.base,
+                   sp.chunk, m.c.eps2, pp);
+  sum_phi<<<blocks(m.N, 256), 256, 0, e.s>>>(m.N, sp.nj, pp, e.phi);
+  std::vector<double> ph(NN), wd(size_t(e.n), 0.0);
+  H4_CUDA(cudaMemcpyAsync(ph.data(), e.phi, NN * sizeof(double), cudaMemcpyDeviceToHost, e.s));
+  if (m.c.dissipation != Dissipation::Off)
+    H4_CUDA(cudaMemcpyAsync(wd.data(), e.wd, size_t(e.n) * sizeof(double), cudaMemcpyDeviceToHost, e.s));
+  H4_CUDA(cudaStreamSynchronize(e.s));
+  H4_CUDA(cudaGetLastError());
+  NSum K, U, P[3], L[3], W;
+  for (size_t i = 0; i < NN; ++i) U.add(p.m[i] * ph[i]);
+  for (int k = 0; k < e.n; ++k) {
+    const size_t i = size_t(e.base + k);
+    const double mi = p.m[i];
+    K.add(0.5 * mi * (p.vx[i] * p.vx[i] + p.vy[i] * p.vy[i] + p.vz[i] * p.vz[i]));
+    P[0].add(mi * p.vx[i]); P[1].add(mi * p.vy[i]); P[2].add(mi * p.vz[i]);
+    L[0].add(mi * (p.y[i] * p.vz[i] - p.z[i] * p.vy[i]));
+    L[1].add(mi * (p.z[i] * p.vx[i] - p.x[i] * p.vz[i]));
+    L[2].add(mi * (p.x[i] * p.vy[i] - p.y[i] * p.vx[i]));
+    W.add(wd[size_t(k)]);
+  }
+  constexpr int kParts = 9;  // K, U, P[3], L[3], W.
+  const double mine[kParts] = {K.value(), U.value(), P[0].value(), P[1].value(), P[2].value(),
+                               L[0].value(), L[1].value(), L[2].value(), W.value()};
+  std::vector<double> all(size_t(kParts) * size_t(m.P));
+  comm::allgather_double(mine, kParts, all.data());
+  NSum tot[kParts];
+  for (int h = 0; h < m.P; ++h)  // Rank order.
+    for (int q = 0; q < kParts; ++q) tot[q].add(all[size_t(h) * kParts + size_t(q)]);
+  Diagnostics r;
+  r.time = double(m.T) * m.tick;
+  r.K = tot[0].value();
+  r.U = -m.c.G * tot[1].value();
+  r.E = r.K + r.U;
+  for (int k = 0; k < 3; ++k) {
+    r.P[k] = tot[2 + k].value();
+    r.L[k] = tot[5 + k].value();
+  }
+  r.W_diss = tot[8].value();
+  return r;
+}
+#endif
 
 }  // namespace h4nb

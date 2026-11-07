@@ -9,7 +9,7 @@
 // gflops = 60 * pairs_per_s / 1e9. 60 FP64 FLOP per pair is the cost model of the plan and of research.md R6.
 // It is a model, not a count of the instructions in the kernel.
 // pct_peak = 100 * gflops / (1000 * fp64_peak). The column is in bench.dat only when fp64_peak > 0.
-// Exit codes: 0 = done, 1 = runtime error (example: no CUDA device), 2 = settings error.
+// Exit codes: 0 = done, 1 = runtime error (example: no CUDA device), 2 = settings error or more than one rank.
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -46,7 +46,7 @@ struct Row {
   double pairs_per_s, gflops, wall;
 };
 
-int main(int argc, char** argv) try {
+static int run(int argc, char** argv) try {
   Settings s;
   declare(s);
   s.parse(argc, argv);
@@ -135,4 +135,22 @@ int main(int argc, char** argv) try {
   return 0;
 } catch (const std::exception& e) {
   return settings_main_error("h4nb_bench", e);
+}
+
+// Several ranks are not supported: each grid point is a separate run, and one rank per GPU gives no gain here.
+// ponytail: h4nb_bench rejects ranks() > 1 (exit code 2). Upgrade: run each grid point as a collective
+// Simulation and write the files on rank 0 only, as h4nb_run does.
+int main(int argc, char** argv) {
+  try {
+    h4nb::RankScope scope(argc, argv);
+    if (h4nb::ranks() > 1) {
+      if (h4nb::rank() == 0)
+        std::fprintf(stderr, "h4nb_bench: error: %d ranks. This tool runs as one process only. Start it without "
+                     "mpirun or srun, or with one task. Use devices= for several GPUs.\n", h4nb::ranks());
+      return 2;
+    }
+    return run(argc, argv);
+  } catch (const std::exception& e) {
+    return settings_main_error("h4nb_bench", e);
+  }
 }

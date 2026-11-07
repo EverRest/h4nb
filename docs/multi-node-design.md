@@ -1,6 +1,6 @@
 # Multi-node design for h4nb
 
-Status: design only. No source change is made by this document.
+Status: implemented on 2026-11-07 (tasks T029 to T036). The MPI build compiles. The error paths before the GPU ran under `mpirun -np 2` in a container without a GPU. The GPU path under MPI has not run yet (quickstart A9). Section 10 lists where the code differs from the first design text.
 Audience: the developers who build the MPI path, and the reviewers of the constitution and spec changes.
 
 Decisions made by the user (2026-11-07):
@@ -9,8 +9,9 @@ Decisions made by the user (2026-11-07):
 - Constitution version for MPI: 2.0.0 (MAJOR).
 - Diagnostics under MPI: each rank computes `N²/G` pair work for its own targets. Rank 0 adds the rank partials in rank order.
 - Library: CUDA-aware MPI. NCCL is not used.
+- Error path (Q6), "hybrid" (user, 2026-11-07): errors at agreement points stop all ranks cleanly with the normal exit codes. Errors after which the ranks cannot agree stop all ranks with `MPI_Abort`. See section 5.2.
 
-Open items that remain: section 9.2, questions 5 and 6 (cluster size, abort or clean stop).
+Open items that remain: section 9.2, question 5 (cluster size).
 
 Sources read: `CLAUDE.md`, `docs/cuda-best-practices.md`, `specs/001-hermite-nbody-lib/spec.md` (FR-010, FR-019, FR-022), and `docs/superpowers/plans/2026-11-07-h4nb.md` (D2, D3, O7). Also read: `src/simulation.cu` (`step()`, `diagnostics()`), `tools/h4nb_run.cpp`, and TZ line 558.
 
@@ -62,6 +63,8 @@ The public header must not expose MPI or CUDA types (constitution III). Use this
 - `Simulation` keeps its signature. Each rank constructs it with the full `Particles`. Each rank keeps only its own slice on the device.
 
 Add no new public field in the first step. The device of each rank comes from the local rank (section 3.3).
+
+Implementation (T030): the rule above is used. Two plain fields were added to `Config`, because the keys of section 3.1 and T032 need them: `device_offset` and `mpi_host_staging`. Small rank functions were added (`RankScope`, `rank()`, `ranks()`, `local_rank()`, `max_over_ranks()`, `rank_table()`, `abort_ranks()`), so that the tools do not include `mpi.h`. The library uses a copy of `MPI_COMM_WORLD` (`MPI_Comm_dup`). With one rank, the one-process path runs unchanged. Details: `specs/001-hermite-nbody-lib/contracts/public-api.md`, section "Ranks".
 
 ---
 
@@ -179,6 +182,17 @@ Every rank reads the full input file. For 1 M particles this is about 64 MB per 
 
 ### 5.2 Design
 
+**Decision (Q6, user, 2026-11-07): hybrid.** This replaces items 1 to 5 below where they differ.
+
+- **Errors at agreement points: a clean collective stop.** All ranks return the normal exit code of `h4nb_run` (1 runtime, 2 settings or input, 3 NaN). Rank 0 writes the files and the verdict.
+  - NaN or Inf: the flag goes into the `MPI_Allreduce` (`MPI_MIN`) of `Tn` that runs at each block step. The message holds `{Tn, no-NaN flag}` as two `int64` values. All ranks see the flag after the same block step, and `advance_to()` returns early on all ranks. The tool then sees `kNaN` in `status()` (`MPI_BOR`) and returns 3.
+  - Settings and input checks in the tool: each rank checks. Then all ranks agree on the largest error code (`MPI_MAX`, `h4nb::max_over_ranks`). A rank with an error calls the same agreement from its error handler. A settings error is printed one time.
+  - `Simulation` constructor: the checks, the device selection and the allocations are local. An `MPI_MAX` agreement follows them, before the first collective. All ranks throw.
+  - File writes (rank 0 only): rank 0 records the error. All ranks agree at the next diag time and at the end of the run. All ranks return 1.
+- **Errors after which the ranks cannot agree: `MPI_Abort`.** A CUDA error, an MPI error or an exception on one rank only. The other ranks can wait in a collective. The library (or the tool) flushes all C output streams, prints the message with the rank, and calls `MPI_Abort`. The library communicator uses `MPI_ERRORS_RETURN`, so an MPI error becomes an exception with the call name and the rank.
+
+First design text (kept for reference):
+
 1. **CUDA error or allocation failure on one rank.** The rank calls `MPI_Abort(MPI_COMM_WORLD, code)`. This stops all ranks. The library prints the rank, the CUDA error and the call. Use this as the first version. It is simple and it cannot deadlock. Upgrade path: an error-flag `MPI_Allreduce` once per step. Use it only if clean exits are needed.
 2. **Invalid numerical value (NaN or Inf).** The status word is OR-reduced across ranks at each sync point (`MPI_Allreduce`, `MPI_BOR`). The owner of the bad target sets the bit. After the reduce, every rank sees the bit. Every rank then throws the same error at the same step. No rank is left in a collective.
 3. **Too small time step (`kDtUnderflow`) and close pair (`kClosePair`).** Same as the NaN case. They are status bits.
@@ -190,6 +204,7 @@ Every rank reads the full input file. For 1 M particles this is about 64 MB per 
 - The NaN check `x != x` (or `!(x - x == 0)`) works on each rank. It needs no change.
 - The status word of each rank has bits for its own targets. The OR-reduce makes the word global.
 - The run stops at the first sync point after the bad value. The sync point is the end of the block step. It is one step later than the bad value. Document this delay in the run log.
+- Implementation: the check is at the start of each block step (phase 1). The time in the message of `h4nb_run` is the time of the last finished block step.
 
 ---
 
@@ -292,4 +307,17 @@ The changes below touch principle V and the Hardware and Toolchain section. They
 3. **Constitution version.** Decided: 2.0.0 (user, 2026-11-07).
 4. **Diagnostics method.** Decided: `N²/G` per rank (user, 2026-11-07).
 5. **Cluster size.** How many nodes and GPUs per node are the targets? This sets the scaling tests and the 1M-particle plan.
-6. **Abort or clean stop.** Is `MPI_Abort` on error acceptable (section 5.2 item 1)?
+6. **Abort or clean stop.** Decided: hybrid (user, 2026-11-07). See section 5.2.
+
+---
+
+## 10. Implementation notes (2026-11-07)
+
+Where the code differs from the text above, and why:
+
+1. **Diagnostics (section 4.1).** Each rank runs the potential kernel of the one-process path for its **own sources**, with pairs `j > i` only. It does not sum over all pairs of its own targets. The work of rank r is about `N·n_r − n_r²/2` pairs. This is at most `N²/G` for each rank, so the cost bound of the decision holds. The total work is `N²/2`, not `N²`. The code uses the existing kernel. No new kernel needs a GPU check.
+2. **Diagnostics sums.** Each rank computes 9 Neumaier partials (K, U, P, L and W_diss). `MPI_Allgather` gives all partials to every rank. Each rank adds them in rank order. So every rank has the same `Diagnostics` bits. MPI adds no floating-point value.
+3. **Snapshots and `state()` (section 4.2).** `state()` uses `MPI_Allgatherv`, not `MPI_Gatherv` to rank 0. Every rank gets the full set. The diagnostics need all positions on every rank anyway. Cost: `N × 64 B` on every rank for each call. Upgrade path: `MPI_Gatherv` to rank 0, after a measurement.
+4. **Device selection (section 3.3).** One visible device: device 0. Otherwise `(local_rank + device_offset) % count`. The constructor throws when `local_rank >= count`.
+5. **Tests (section 6.1).** No `cpu-mpi` test is in the repository (the task list has no test tasks). A check program outside the repository ran under `mpirun -np 1` to `-np 4`. It checked the rank order of `MPI_Allgatherv`, the row layout of `MPI_Alltoallv`, the bitwise rank-order sum, the `MPI_MIN` flag, `MPI_BOR`, `MPI_MAX`, and `abort_ranks` (all ranks stop, the file is flushed).
+

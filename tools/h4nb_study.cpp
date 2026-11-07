@@ -5,7 +5,7 @@
 // max_rel_err and mean_rel_err use the diag samples with time <= t_end, the t=0 sample included (as in h4nb_run).
 // block_steps, pair_evals and wall_s count from t=0 to t_end. The init force pass and the diagnostics are not counted.
 // A NaN or Inf stops the pair (dt_max, eta). Each row with a t_end after the failure has nan errors and pass=0.
-// Exit codes: 0 = done (rows with pass=0 included), 1 = runtime error, 2 = settings error.
+// Exit codes: 0 = done (rows with pass=0 included), 1 = runtime error, 2 = settings error or more than one rank.
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -54,7 +54,7 @@ struct Row {
   bool pass;
 };
 
-int main(int argc, char** argv) try {
+static int run(int argc, char** argv) try {
   Settings s;
   declare(s);
   s.parse(argc, argv);
@@ -217,4 +217,22 @@ int main(int argc, char** argv) try {
   return 0;
 } catch (const std::exception& e) {
   return settings_main_error("h4nb_study", e);
+}
+
+// Several ranks are not supported: each grid point is a separate run, and one rank per GPU gives no gain here.
+// ponytail: h4nb_study rejects ranks() > 1 (exit code 2). Upgrade: run each grid point as a collective
+// Simulation and write the files on rank 0 only, as h4nb_run does.
+int main(int argc, char** argv) {
+  try {
+    h4nb::RankScope scope(argc, argv);
+    if (h4nb::ranks() > 1) {
+      if (h4nb::rank() == 0)
+        std::fprintf(stderr, "h4nb_study: error: %d ranks. This tool runs as one process only. Start it without "
+                     "mpirun or srun, or with one task. Use devices= for several GPUs.\n", h4nb::ranks());
+      return 2;
+    }
+    return run(argc, argv);
+  } catch (const std::exception& e) {
+    return settings_main_error("h4nb_study", e);
+  }
 }

@@ -33,6 +33,8 @@ key = value        # spaces around '=' are allowed; a trailing comment is allowe
 - A value out of range is an error.
 - Each error message names the key, the value and the source (for example `file:run.cfg:7`). The tool exits with code 2.
 - Exit codes of `h4nb_run`: 0 = done, 1 = runtime error (for example CUDA or file I/O), 2 = settings or input error, 3 = numerical failure (NaN or Inf).
+- Several ranks (MPI build, task T034): all ranks return the same exit code for a settings, input or file error and for a NaN. The ranks agree on the code before they stop. Only one copy of a settings error is printed. A CUDA error, an MPI error or an error on one rank only stops all ranks with `MPI_Abort` and a message that names the rank. `mpirun` then reports the abort code.
+- `h4nb_study` and `h4nb_bench` run as one process only. With more than one rank, they print an error and return 2.
 - An environment variable for a key that the tool does not declare is ignored, because one environment serves several tools. An unknown key in a file or on the command line is an error.
 - A relative path in `config.used` is relative to the working directory of the run, not to the file.
 - `t_end`, `diag` and each snapshot time must be multiples of `dt_max`. Otherwise it is an error. The tool does not round them.
@@ -90,10 +92,10 @@ A preset sets defaults only. A file, the environment or the command line can cha
 | Key | Type | Default | Range | Meaning |
 |---|---|---|---|---|
 | `devices` | int list | `0` | valid CUDA IDs | Single process only. Ignored under MPI. |
-| `device_offset` | int | 0 | ≥ 0 | MPI only. Added to the local rank to pick the GPU. |
+| `device_offset` | int | 0 | ≥ 0 | MPI only. Added to the local rank to pick the GPU: `(local rank + device_offset) % device count`. With one visible GPU per task, the rank uses device 0. |
 | `tile` | int | 128 | 64, 128, 256 | Targets per block in the force and potential kernels. |
 | `blocks_per_sm` | int | 4 | 1 to 16 | Target blocks per SM for the source split. |
-| `mpi_host_staging` | bool | 0 | 0, 1 | MPI only. Stage the MPI buffers through pinned host memory. Use 1 when the MPI library is not CUDA-aware. |
+| `mpi_host_staging` | bool | 0 | 0, 1 | MPI only. Stage the MPI buffers through pinned host memory. Use 1 when the MPI library is not CUDA-aware. Cost: about N × 132 B + 2 × N × 32 B of pinned memory for each rank. |
 
 ### Diagnostics and output
 

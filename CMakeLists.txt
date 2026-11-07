@@ -16,6 +16,20 @@ find_package(CUDAToolkit REQUIRED)
 
 add_library(h4nb src/io.cpp src/kernels.cu src/simulation.cu src/build_info.cu)
 
+# Optional MPI path (tasks T029 to T036, docs/multi-node-design.md). Default OFF: the build then has no MPI dependency.
+# With ON, src/mpi_comm.cpp holds all MPI calls. Only that file includes mpi.h. simulation.cu calls it through the
+# MPI-free header src/mpi_comm.hpp. Without MPI, src/single_rank.cpp gives the same public functions for one rank.
+option(H4NB_MPI "Build the MPI path (one rank per GPU, several nodes)" OFF)
+if(H4NB_MPI)
+  find_package(MPI REQUIRED COMPONENTS CXX)
+  target_sources(h4nb PRIVATE src/mpi_comm.cpp)
+  set_source_files_properties(src/mpi_comm.cpp PROPERTIES COMPILE_DEFINITIONS "OMPI_SKIP_MPICXX=1;MPICH_SKIP_MPICXX=1")
+  set_property(SOURCE src/simulation.cu src/mpi_comm.cpp src/build_info.cu APPEND PROPERTY COMPILE_DEFINITIONS H4NB_HAVE_MPI=1)
+  target_link_libraries(h4nb PRIVATE MPI::MPI_CXX)
+else()
+  target_sources(h4nb PRIVATE src/single_rank.cpp)
+endif()
+
 # Build record for h4nb::build_info() (task T027). CMake reads the commit at configure time.
 # A later commit does not change the value until the next configure step.
 set(H4NB_GIT_COMMIT "unknown")
@@ -34,7 +48,7 @@ if(GIT_FOUND)
 endif()
 # A list of architectures (example: 80;90) becomes "80,90". A ';' separates the definitions.
 string(REPLACE ";" "," h4nb_archs "${CMAKE_CUDA_ARCHITECTURES}")
-set_source_files_properties(src/build_info.cu PROPERTIES COMPILE_DEFINITIONS
+set_property(SOURCE src/build_info.cu APPEND PROPERTY COMPILE_DEFINITIONS
   "H4NB_GIT_COMMIT=\"${H4NB_GIT_COMMIT}\";H4NB_BUILD_TYPE=\"${CMAKE_BUILD_TYPE}\";H4NB_CUDA_ARCHITECTURES=\"${h4nb_archs}\"")
 target_include_directories(h4nb PUBLIC include PRIVATE src)
 

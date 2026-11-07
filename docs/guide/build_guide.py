@@ -31,6 +31,7 @@ cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_CUDA_ARCHITECTURES=89    
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_CUDA_ARCHITECTURES=90      # GH200 / H100
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_CUDA_ARCHITECTURES="89;90" # both
 cmake --build build -j
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_CUDA_ARCHITECTURES=90 -DH4NB_MPI=ON   # MPI (several nodes)
 """
 RUN = """
 build/h4nb_mkdisk n=127999 frac=0.1 out=disk128k.snap     # prints mean / median / mass-weighted period
@@ -54,10 +55,14 @@ H4NB_ETA=0.00025 build/h4nb_run config=configs/agn.cfg ic=disk128k.snap out=run2
 build/h4nb_run config=run1/config.used out=run1_repeat     # repeat a run exactly
 """
 MPI = """
+# build with -DH4NB_MPI=ON; one rank per GPU; only rank 0 writes files
 srun --ntasks-per-node=4 --gpus-per-task=1 --gpu-bind=single:1 \\
   build/h4nb_run config=configs/gh200.cfg ic=disk1m.snap out=run1m t_end=6.3125
 mpirun -np 8 --map-by ppr:4:node --bind-to core \\
   build/h4nb_run config=configs/gh200.cfg ic=disk1m.snap out=run1m t_end=6.3125
+mpirun -np 2 build/h4nb_run ic=disk.snap out=r2 t_end=6.3125 mpi_host_staging=1   # MPI not CUDA-aware
+mpirun -np 4 build/h4nb_run ic=disk.snap out=r4 t_end=6.3125 device_offset=4      # GPUs 4-7 of a node
+# exit codes on all ranks: 1 runtime, 2 settings/input, 3 NaN; CUDA/MPI error: MPI_Abort
 """
 CPP = """
 #include <cmath>
@@ -77,11 +82,10 @@ if (sim.status() & h4nb::kNaN) { /* stop */ }
 AVAIL_KEYS = ["ic", "out", "t_end", "eta", "eta_init", "dt_max", "max_level", "eps", "mode", "fixed_level",
               "fixed_center", "devices", "diag", "snap", "r_close",
               "n", "central_id", "period", "period_kind", "preset", "G", "dissipation", "drag_tau", "drag_vbg", "tile", "blocks_per_sm",
-              "snap_times", "energy_tol", "perf"]
+              "snap_times", "energy_tol", "perf", "device_offset", "mpi_host_staging"]
 AVAIL_DEF = ["—", "—", "—", "0.01", "0.01", "1/64", "40", "0", "block", "0", "0", "0", "dt_max", "0", "-1",
-             "0", "0", "0", "mean", "none", "1", "off", "0", "0,0,0", "128", "4", "—", "1e-8", "1"]
-PLANNED = [
-           ("device_offset, mpi_host_staging", "T030, T032")]
+             "0", "0", "0", "mean", "none", "1", "off", "0", "0,0,0", "128", "4", "—", "1e-8", "1", "0", "0"]
+PLANNED = []  # All keys of contracts/run-config.md are available now (T030, T032: 2026-11-07).
 
 DOCS = [("README.md", "README"), (".specify/memory/constitution.md", "Constitution"),
         ("specs/001-hermite-nbody-lib/spec.md", "Spec"), ("specs/001-hermite-nbody-lib/plan.md", "Plan"),
@@ -111,7 +115,7 @@ T["en"] = dict(
               ["Precision", "FP64 only, no fast-math, no float atomics, fixed sum order", "Accuracy and bit-identical runs"],
               ["Softening", "Optional Plummer ε; presets AGN 0.01, stellar 0.0001", "It changes the model; it does not hide errors"],
               ["Several GPUs", "Split sources (j-parallel); owner adds partials in order", "Few active particles per step; same work per GPU"],
-              ["Several nodes 🚧", "One MPI rank per GPU, CUDA-aware MPI (T029–T036)", "Target: 4–8 GH200"],
+              ["Several nodes ✅ (compiled; not run on GPUs)", "One MPI rank per GPU, CUDA-aware MPI, owner sums in rank order (T029–T036)", "Target: 4–8 GH200"],
               ["η", "Measure it per system; about 5e-4 for 1e-8", "The TZ range 0.001–0.02 does not reach 1e-8"],
               ["Speed work", "Each optimisation needs a measured gate", "GPU speed guesses are often wrong"]],
     s_arch="3. Architecture",
@@ -129,7 +133,8 @@ T["en"] = dict(
                  "first step factor", "largest step (level 0)", "dt_min = dt_max / 2^max_level", "softening length ε",
                  "block or fixed", "level in fixed mode", "1: centre does not move (tests)", "GPU list, e.g. 0,1",
                  "energy record interval", "snapshot interval (multiple of diag)", "close-pair radius; 0 = off",
-                 "expected particle count (0 = no check)", "ID of record 0 (central body)", "reference period (0 = estimate, needs G = 1)", "mean, median or mass_weighted", "none, agn (ε 0.01), stellar (ε 0.0001)", "gravitational constant", "off or linear_drag: a_diss = −(v − v_bg)/τ, not on particle 0; the verdict uses E − E₀ − W_diss", "drag time τ, > 0 with linear_drag", "background velocity v_bg (3 values)", "targets per block: 64, 128 or 256", "1 to 16", "explicit snapshot times", "energy verdict threshold", "0: no performance.dat"],
+                 "expected particle count (0 = no check)", "ID of record 0 (central body)", "reference period (0 = estimate, needs G = 1)", "mean, median or mass_weighted", "none, agn (ε 0.01), stellar (ε 0.0001)", "gravitational constant", "off or linear_drag: a_diss = −(v − v_bg)/τ, not on particle 0; the verdict uses E − E₀ − W_diss", "drag time τ, > 0 with linear_drag", "background velocity v_bg (3 values)", "targets per block: 64, 128 or 256", "1 to 16", "explicit snapshot times", "energy verdict threshold", "0: no performance.dat",
+                 "MPI only: GPU = (local rank + device_offset) % device count", "MPI only: 1 = copy MPI buffers through pinned host memory (MPI not CUDA-aware)"],
     cfg_sources="✅ Five sources. A later source wins:",
     cfg_src_list="<ol><li>default</li><li><code>preset=none|agn|stellar</code></li><li><code>config=&lt;file&gt;</code> (key=value lines)</li><li>environment <code>H4NB_&lt;KEY&gt;</code></li><li>command line</li></ol><p>An unknown key or a bad value is an error (exit code 2). Each run writes <code>config.used</code>. <code>help=1</code> prints all keys.</p>",
     cfg_planned_head=["🚧 Still planned", "Task"],
@@ -142,7 +147,7 @@ T["en"] = dict(
             ["tile, blocks_per_sm", "Measure with h4nb_bench; keep the best values in the machine config."],
             ["GPUs / nodes", "Set by the launcher (devices=, mpirun, srun). The cluster size is not fixed in the code."]],
     s_cheat="6. Cheat sheet",
-    cheat_cfg="Config file ✅", cheat_runcfg="Run with a config file ✅", cheat_mpi="Several nodes 🚧", cheat_cpp="C++ ✅",
+    cheat_cfg="Config file ✅", cheat_runcfg="Run with a config file ✅", cheat_mpi="Several nodes (MPI) ✅ compiled, GPU run pending", cheat_cpp="C++ ✅",
     cheat_out="Output files ✅",
     out=[["energy.dat", "time K U E rel_err max_rel_err mean_rel_err W_diss"], ["energy_periods.dat", "period t_start t_end max_rel_err mean_rel_err complete"], ["study/study.dat", "eta dt_max t_end max_rel_err ... pair_evals wall_s pass"], ["momentum.dat", "time Px Py Pz Lx Ly Lz dP_rel dL_rel"],
          ["timesteps.dat", "time dt_min dt_max dt_mean mean_active r_min"], ["performance.dat", "time wall_s block_steps active pairs_per_s"], ["bench/bench.dat", "N devices tile blocks_per_sm pairs_per_s gflops wall_s [pct_peak]"],
@@ -184,7 +189,7 @@ T["it"] = dict(
               ["Precisione", "Solo FP64, niente fast-math, niente atomici float, ordine di somma fisso", "Precisione ed esecuzioni identiche bit per bit"],
               ["Softening", "Plummer ε opzionale; preset AGN 0.01, stellare 0.0001", "Cambia il modello; non nasconde gli errori"],
               ["Più GPU", "Sorgenti suddivise (j-parallel); il proprietario somma i parziali in ordine", "Poche particelle attive per passo; stesso lavoro per GPU"],
-              ["Più nodi 🚧", "Un rank MPI per GPU, MPI CUDA-aware (T029–T036)", "Obiettivo: 4–8 GH200"],
+              ["Più nodi ✅ (compilato; non provato su GPU)", "Un rank MPI per GPU, MPI CUDA-aware, somma del proprietario in ordine di rank (T029–T036)", "Obiettivo: 4–8 GH200"],
               ["η", "Misurarlo per ogni sistema; circa 5e-4 per 1e-8", "L'intervallo 0.001–0.02 del TZ non raggiunge 1e-8"],
               ["Ottimizzazione", "Ogni ottimizzazione richiede una misura che ne mostri il bisogno", "Le stime di velocità su GPU sono spesso sbagliate"]],
     s_arch="3. Architettura",
@@ -202,7 +207,8 @@ T["it"] = dict(
                  "fattore del primo passo", "passo massimo (livello 0)", "dt_min = dt_max / 2^max_level", "lunghezza di softening ε",
                  "block o fixed", "livello in modalità fixed", "1: il centro non si muove (test)", "elenco GPU, es. 0,1",
                  "intervallo dei record di energia", "intervallo degli snapshot (multiplo di diag)", "raggio coppie vicine; 0 = spento",
-                 "numero atteso di particelle (0 = nessun controllo)", "ID del record 0 (corpo centrale)", "periodo di riferimento (0 = stima, richiede G = 1)", "mean, median o mass_weighted", "none, agn (ε 0.01), stellar (ε 0.0001)", "costante gravitazionale", "off o linear_drag: a_diss = −(v − v_bg)/τ, non sulla particella 0; il verdetto usa E − E₀ − W_diss", "tempo di attrito τ, > 0 con linear_drag", "velocità di fondo v_bg (3 valori)", "target per blocco: 64, 128 o 256", "da 1 a 16", "tempi espliciti degli snapshot", "soglia del verdetto sull'energia", "0: niente performance.dat"],
+                 "numero atteso di particelle (0 = nessun controllo)", "ID del record 0 (corpo centrale)", "periodo di riferimento (0 = stima, richiede G = 1)", "mean, median o mass_weighted", "none, agn (ε 0.01), stellar (ε 0.0001)", "costante gravitazionale", "off o linear_drag: a_diss = −(v − v_bg)/τ, non sulla particella 0; il verdetto usa E − E₀ − W_diss", "tempo di attrito τ, > 0 con linear_drag", "velocità di fondo v_bg (3 valori)", "target per blocco: 64, 128 o 256", "da 1 a 16", "tempi espliciti degli snapshot", "soglia del verdetto sull'energia", "0: niente performance.dat",
+                 "solo MPI: GPU = (rank locale + device_offset) % numero di GPU", "solo MPI: 1 = buffer MPI copiati tramite memoria host pinned (MPI non CUDA-aware)"],
     cfg_sources="✅ Cinque sorgenti. Vince la sorgente successiva:",
     cfg_src_list="<ol><li>valore predefinito</li><li><code>preset=none|agn|stellar</code></li><li><code>config=&lt;file&gt;</code> (righe key=value)</li><li>variabili d'ambiente <code>H4NB_&lt;KEY&gt;</code></li><li>riga di comando</li></ol><p>Una chiave sconosciuta o un valore errato è un errore (codice di uscita 2). Ogni esecuzione scrive <code>config.used</code>. <code>help=1</code> stampa tutte le chiavi.</p>",
     cfg_planned_head=["🚧 Ancora previsto", "Task"],
@@ -215,7 +221,7 @@ T["it"] = dict(
             ["tile, blocks_per_sm", "Misurarli con h4nb_bench; salvare i valori migliori nella config della macchina."],
             ["GPU / nodi", "Li imposta il launcher (devices=, mpirun, srun). La dimensione del cluster non è fissata nel codice."]],
     s_cheat="6. Promemoria",
-    cheat_cfg="File di configurazione ✅", cheat_runcfg="Esecuzione con file di configurazione ✅", cheat_mpi="Più nodi 🚧", cheat_cpp="C++ ✅",
+    cheat_cfg="File di configurazione ✅", cheat_runcfg="Esecuzione con file di configurazione ✅", cheat_mpi="Più nodi (MPI) ✅ compilato, prova su GPU da fare", cheat_cpp="C++ ✅",
     cheat_out="File di output ✅",
     out=[],
     s_problems="7. Problemi comuni",
@@ -255,7 +261,7 @@ T["uk"] = dict(
               ["Точність", "Лише FP64, без fast-math, без float-атоміків, фіксований порядок сум", "Точність і побітово однакові запуски"],
               ["Softening", "Необов'язковий Plummer ε; пресети АЯГ 0.01, зоряні 0.0001", "Змінює модель; не приховує похибки"],
               ["Кілька GPU", "Розподілені джерела (j-parallel); власник додає часткові суми в порядку", "Мало активних частинок на крок; однакова робота на GPU"],
-              ["Кілька вузлів 🚧", "Один MPI rank на GPU, CUDA-aware MPI (T029–T036)", "Ціль: 4–8 GH200"],
+              ["Кілька вузлів ✅ (скомпільовано; на GPU не перевірено)", "Один MPI rank на GPU, CUDA-aware MPI, власник сумує в порядку rank (T029–T036)", "Ціль: 4–8 GH200"],
               ["η", "Вимірювати для кожної системи; ≈5e-4 для 1e-8", "Діапазон ТЗ 0.001–0.02 не досягає 1e-8"],
               ["Оптимізація", "Кожна оптимізація потребує виміру, який показує потребу", "Припущення про швидкість GPU часто хибні"]],
     s_arch="3. Архітектура",
@@ -273,7 +279,8 @@ T["uk"] = dict(
                  "множник першого кроку", "найбільший крок (рівень 0)", "dt_min = dt_max / 2^max_level", "довжина softening ε",
                  "block або fixed", "рівень у режимі fixed", "1: центр нерухомий (тести)", "список GPU, напр. 0,1",
                  "інтервал записів енергії", "інтервал знімків (кратний diag)", "радіус близьких пар; 0 = вимкнено",
-                 "очікувана кількість частинок (0 = без перевірки)", "ID запису 0 (центральне тіло)", "опорний період (0 = оцінка, потрібно G = 1)", "mean, median або mass_weighted", "none, agn (ε 0.01), stellar (ε 0.0001)", "гравітаційна стала", "off або linear_drag: a_diss = −(v − v_bg)/τ, крім частинки 0; вердикт використовує E − E₀ − W_diss", "час гальмування τ, > 0 з linear_drag", "фонова швидкість v_bg (3 значення)", "цілей на блок: 64, 128 або 256", "від 1 до 16", "явні часи знімків", "поріг вердикту енергії", "0: без performance.dat"],
+                 "очікувана кількість частинок (0 = без перевірки)", "ID запису 0 (центральне тіло)", "опорний період (0 = оцінка, потрібно G = 1)", "mean, median або mass_weighted", "none, agn (ε 0.01), stellar (ε 0.0001)", "гравітаційна стала", "off або linear_drag: a_diss = −(v − v_bg)/τ, крім частинки 0; вердикт використовує E − E₀ − W_diss", "час гальмування τ, > 0 з linear_drag", "фонова швидкість v_bg (3 значення)", "цілей на блок: 64, 128 або 256", "від 1 до 16", "явні часи знімків", "поріг вердикту енергії", "0: без performance.dat",
+                 "лише MPI: GPU = (локальний rank + device_offset) % кількість GPU", "лише MPI: 1 = буфери MPI через pinned-пам'ять хоста (MPI не CUDA-aware)"],
     cfg_sources="✅ П'ять джерел. Пізніше джерело перемагає:",
     cfg_src_list="<ol><li>значення за замовчуванням</li><li><code>preset=none|agn|stellar</code></li><li><code>config=&lt;file&gt;</code> (рядки key=value)</li><li>змінні середовища <code>H4NB_&lt;KEY&gt;</code></li><li>командний рядок</li></ol><p>Невідомий ключ або хибне значення — це помилка (код виходу 2). Кожен запуск записує <code>config.used</code>. <code>help=1</code> друкує всі ключі.</p>",
     cfg_planned_head=["🚧 Ще заплановано", "Задача"],
@@ -286,7 +293,7 @@ T["uk"] = dict(
             ["tile, blocks_per_sm", "Виміряйте через h4nb_bench; збережіть найкращі значення в конфігу машини."],
             ["GPU / вузли", "Задає лаунчер (devices=, mpirun, srun). Розмір кластера в коді не зафіксовано."]],
     s_cheat="6. Шпаргалка",
-    cheat_cfg="Файл конфігурації ✅", cheat_runcfg="Запуск з файлом конфігурації ✅", cheat_mpi="Кілька вузлів 🚧", cheat_cpp="C++ ✅",
+    cheat_cfg="Файл конфігурації ✅", cheat_runcfg="Запуск з файлом конфігурації ✅", cheat_mpi="Кілька вузлів (MPI) ✅ скомпільовано, запуск на GPU попереду", cheat_cpp="C++ ✅",
     cheat_out="Вихідні файли ✅",
     out=[],
     s_problems="7. Типові проблеми",
@@ -340,7 +347,7 @@ def page(lang):
             ("config", t["s_config"]), ("cheat", t["s_cheat"]), ("problems", t["s_problems"]), ("hw", t["s_hw"]), ("docs", t["s_docs"])]
     nav = "".join(f'<li><a href="#{i}">{html.escape(s.split(". ", 1)[1])}</a></li>' for i, s in secs)
     keys = table(t["cfg_keyhead"], [[k(a), k(b) if b != "—" else b, m] for a, b, m in zip(AVAIL_KEYS, AVAIL_DEF, t["cfg_meaning"])])
-    planned = table(t["cfg_planned_head"], [[k(a), b] for a, b in PLANNED])
+    planned = table(t["cfg_planned_head"], [[k(a), b] for a, b in PLANNED]) if PLANNED else ""
     docs = "<ul>" + "".join(f'<li><a href="{REPO}{p}">{n}</a> — <code>{p}</code></li>' for p, n in DOCS) + "</ul>"
     body = f"""
 <section id="problem"><h2>{t['s_problem']}</h2>{t['problem']}</section>

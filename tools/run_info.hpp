@@ -3,6 +3,8 @@
 // write_run_info() writes "key: value" lines. It does not throw for a CUDA error. It writes the error text instead.
 // Thus a tool can call it before the Simulation constructor, also on a machine without a GPU.
 // It throws std::runtime_error only when it cannot write the file.
+// Several ranks (MPI): the tool calls h4nb::rank_table() on all ranks, and only rank 0 calls write_run_info() with
+// its result in rank_lines. The device_<k> lines are then not written, because a rank ignores the devices key.
 #include <cuda_runtime.h>
 #include <unistd.h>
 #include <cstdio>
@@ -13,9 +15,10 @@
 #include "h4nb/h4nb.hpp"
 
 inline void write_run_info(const std::string& path, const std::string& tool, const std::vector<int>& devices, int argc,
-                           char** argv) {
+                           char** argv, const std::string& rank_lines = "") {
   std::string s = "tool: " + tool + "\n" + h4nb::build_info();
-  for (size_t k = 0; k < devices.size(); ++k) {
+  const int nranks = h4nb::ranks();
+  for (size_t k = 0; nranks == 1 && k < devices.size(); ++k) {
     const std::string key = "device_" + std::to_string(k) + ": ";
     cudaDeviceProp prop{};
     const cudaError_t e = cudaGetDeviceProperties(&prop, devices[k]);
@@ -26,7 +29,8 @@ inline void write_run_info(const std::string& path, const std::string& tool, con
       s += key + "id=" + std::to_string(devices[k]) + " error=" + cudaGetErrorString(e) + "\n";
   }
   cudaGetLastError();  // Clear the error. The Simulation constructor must not see it.
-  s += "ranks: 1\n";  // The MPI tasks (T030 and later) change this value.
+  s += "ranks: " + std::to_string(nranks) + "\n";
+  s += rank_lines;  // Several ranks: "mpi_library: ..." and one "rank_<r>: host=... device=..." line for each rank.
   char host[256] = "unknown";
   if (gethostname(host, sizeof host) != 0) std::snprintf(host, sizeof host, "unknown");
   host[sizeof host - 1] = '\0';
