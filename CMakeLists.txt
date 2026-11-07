@@ -52,6 +52,12 @@ if(GIT_FOUND)
     endif()
   endif()
 endif()
+# A build from a source archive has no Git data. Then CMake uses H4NB_SOURCE_VERSION (example: v0.1.0).
+# The Spack recipe sets it for release versions.
+set(H4NB_SOURCE_VERSION "" CACHE STRING "Source version for build_info() when Git cannot give the commit")
+if(H4NB_GIT_COMMIT STREQUAL "unknown" AND H4NB_SOURCE_VERSION)
+  set(H4NB_GIT_COMMIT "${H4NB_SOURCE_VERSION}")
+endif()
 # A list of architectures (example: 80;90) becomes "80,90". A ';' separates the definitions.
 string(REPLACE ";" "," h4nb_archs "${CMAKE_CUDA_ARCHITECTURES}")
 set_property(SOURCE src/build_info.cu APPEND PROPERTY COMPILE_DEFINITIONS

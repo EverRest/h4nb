@@ -11,6 +11,7 @@ Spack is a build and deploy tool only. It adds no library dependency to h4nb. Th
 | `spack/spack_repo/h4nb/packages/h4nb/package.py` | The Spack recipe for h4nb. |
 | `spack/spack_repo/h4nb/repo.yaml` | The Spack package repository `h4nb`. |
 | `spack/envs/dev-4070ti/spack.yaml` | The environment for the PC: 2x RTX 4070 Ti, `cuda_arch=89`, no MPI. |
+| `tools/h4nb_release.sh` | Makes a release tag and adds the release to the recipe (`make release`, `make release-recipe`). |
 | `spack/envs/gh200/spack.yaml` | The environment for the cluster: GH200, `cuda_arch=90`, `+mpi`, aarch64 (`neoverse_v2`). |
 
 The two environments build this Git working tree (the `develop` section). Thus you build the code that you edit, not a fresh clone.
@@ -86,7 +87,7 @@ spack install h4nb cuda_arch=90 +mpi            # GH200
 spack install h4nb cuda_arch=89,90              # both architectures in one build
 ```
 
-These commands clone the `main` branch from GitHub. They do not use the working tree.
+`spack install h4nb` without a version takes the highest release in the recipe. `h4nb@main` clones the `main` branch from GitHub. `h4nb@0.1.0` downloads the GitHub archive of the tag `v0.1.0`. These commands do not use the working tree.
 
 ## 7. Tests
 
@@ -102,3 +103,43 @@ These commands clone the `main` branch from GitHub. They do not use the working 
 | `share/h4nb/configs/` | The example configs (`agn.cfg`, `stellar.cfg`, `dev-4070ti.cfg`, `gh200.cfg`) |
 
 `h4nb::build_info()` reports the Git commit. A build from the working tree reports the commit of the working tree.
+
+## 9. Make a release
+
+Spack does not publish packages like PyPI or npm. The recipe gives a list of versions. For each version, Spack downloads the GitHub archive of a Git tag and compares its sha256 with the recipe.
+
+To make the release `0.1.0`, do these steps on the branch `main`:
+
+1. Commit all the changes that the release must include.
+2. Make the tag. The script does not push.
+
+   ```bash
+   make release VERSION=0.1.0       # makes the annotated tag v0.1.0 on HEAD
+   git push origin main v0.1.0
+   ```
+
+3. Optional: make a GitHub release from the tag (`gh release create v0.1.0 --generate-notes`, or on the GitHub web page).
+4. Add the version to the recipe. The script downloads the archive of the tag, calculates the sha256, adds `version("0.1.0", sha256="...")` and commits only the recipe. It does not push.
+
+   ```bash
+   make release-recipe VERSION=0.1.0
+   git push origin main
+   ```
+
+5. On the cluster, get the new recipe (`git pull`). Then `spack install h4nb@0.1.0 cuda_arch=90 +mpi`.
+
+The tag and the recipe line are in two different commits. This is correct: the recipe describes the tag, so it comes after the tag.
+
+Do not move or delete a tag after you push it. The archive then changes, and Spack refuses the download because the sha256 is different. Make a new version instead (for example `0.1.1`).
+
+A release build has no Git data. The recipe sets the CMake option `H4NB_SOURCE_VERSION=v0.1.0`. Then `build_info()` and `run_info.txt` report `v0.1.0` in place of the commit.
+
+## 10. Later: submit the recipe to Spack
+
+Now the recipe is in this repository (`spack repo add spack/spack_repo/h4nb`). Later you can submit it to the official package repository. Then `spack install h4nb` works for all Spack users without `spack repo add`.
+
+1. Do this after the first GPU runs and a stable release (for example `1.0.0`). The Spack maintainers prefer packages with a release.
+2. Fork [spack/spack-packages](https://github.com/spack/spack-packages).
+3. Copy `package.py` to `repos/spack_repo/builtin/packages/h4nb/package.py` in the fork. Remove the comment lines about `make release-recipe`.
+4. Run `spack style` and `spack audit packages h4nb`. Open a pull request.
+5. For each new release, open a new pull request that adds one `version(...)` line.

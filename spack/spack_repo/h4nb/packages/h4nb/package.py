@@ -13,12 +13,15 @@ class H4nb(CMakePackage, CudaPackage):
     steps, FP64, multi-GPU, optional MPI for several nodes."""
 
     homepage = "https://github.com/EverRest/h4nb"
+    url = "https://github.com/EverRest/h4nb/archive/refs/tags/v0.1.0.tar.gz"
     git = "https://github.com/EverRest/h4nb.git"
 
     maintainers("EverRest")
 
     license("MIT")
 
+    # Release versions: "make release-recipe VERSION=X.Y.Z" adds them below the line of main.
+    # Spack prefers the highest release. It uses main only when you ask for h4nb@main.
     version("main", branch="main")
 
     # h4nb is a CUDA library. A build without CUDA is not possible.
@@ -34,7 +37,9 @@ class H4nb(CMakePackage, CudaPackage):
         if int(_arch.rstrip("abf")) < 70:
             conflicts(f"cuda_arch={_arch}", msg="h4nb needs compute capability 7.0 or higher")
 
-    variant("mpi", default=False, description="Build the MPI path (one rank per GPU, several nodes)")
+    variant(
+        "mpi", default=False, description="Build the MPI path (one rank per GPU, several nodes)"
+    )
 
     depends_on("cxx", type="build")
     depends_on("cmake@3.24:", type="build")
@@ -42,9 +47,12 @@ class H4nb(CMakePackage, CudaPackage):
     depends_on("mpi", when="+mpi")
 
     def cmake_args(self):
+        # A release archive has no Git data. build_info() then reports the tag, for example v0.1.0.
+        source_version = "" if self.spec.satisfies("@main") else f"v{self.version}"
         return [
             self.define_from_variant("H4NB_MPI", "mpi"),
             self.define_cuda_architectures(self),
+            self.define("H4NB_SOURCE_VERSION", source_version),
         ]
 
     def check(self):
