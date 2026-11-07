@@ -70,7 +70,7 @@ A preset sets defaults only. A file, the environment or the command line can cha
 | `eps` | real | 0 | ≥ 0 | Plummer softening length ε. The library receives ε². |
 | `fixed_center` | bool | 0 | 0, 1 | Particle 0 does not move. Tests and comparisons only. |
 | `dissipation` | enum | `off` | `off`, `linear_drag` | Dissipation model. With a model on, the verdict uses E − E₀ − W_diss. |
-| `drag_tau` | real | — | > 0 | `linear_drag` only. Drag time τ. Required for this model. |
+| `drag_tau` | real | 0 | ≥ 0, and > 0 with `linear_drag` | `linear_drag` only. Drag time τ. Required for this model. |
 | `drag_vbg` | real list | `0,0,0` | 3 finite values | `linear_drag` only. Background velocity. |
 
 ### Integrator

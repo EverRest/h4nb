@@ -70,10 +70,11 @@ __global__ void sum_partials(int na, int nparts, const d4* __restrict__ pa, cons
   fj[i] = j;
 }
 
+template <Dissipation D>
 __global__ void correct_kernel(int na, const int* __restrict__ act, const d4* __restrict__ fa,
-                               const d4* __restrict__ fj, StepParams p, int center, d4* x, d4* v, d4* a, d4* j,
-                               int64_t* t, int64_t* next, int* level, unsigned* status,
-                               unsigned long long* minr2) {
+                               const d4* __restrict__ fj, StepParams p, int center, int nodrag,
+                               const d4* __restrict__ vp, d4* x, d4* v, d4* a, d4* j, int64_t* t, int64_t* next,
+                               int* level, unsigned* status, unsigned long long* minr2, double* wd) {
   const int k = blockIdx.x * blockDim.x + threadIdx.x;
   if (k >= na) return;
   const int i = act[k];
@@ -83,12 +84,28 @@ __global__ void correct_kernel(int na, const int* __restrict__ act, const d4* __
   d4 xi = x[i], vi = v[i], ai = a[i], ji = j[i];
   int64_t ti = t[i], ni = 0;
   int li = level[i];
-  const unsigned st = update_particle(p, i == center, a1, j1, f.w, xi, vi, ai, ji, ti, ni, li);
+  if constexpr (D == Dissipation::Off) {
+    double w = 0;  // Not used.
+    const unsigned st = update_particle_d<D>(p, i == center, false, a1, j1, vi, f.w, xi, vi, ai, ji, ti, ni, li, w);
+    if (st) atomicOr(status, st);
+  } else {
+    double w = wd[i];
+    const unsigned st =
+        update_particle_d<D>(p, i == center, i != nodrag, a1, j1, vp[i], f.w, xi, vi, ai, ji, ti, ni, li, w);
+    wd[i] = w;
+    if (st) atomicOr(status, st);
+  }
   x[i] = xi; v[i] = vi; a[i] = ai; j[i] = ji;
   t[i] = ti; next[i] = ni; level[i] = li;
-  if (st) atomicOr(status, st);
   atomicMin(minr2, static_cast<unsigned long long>(__double_as_longlong(f.w)));
 }
+
+#define H4_CORRECT_ARGS                                                                                         \
+  int, const int*, const d4*, const d4*, StepParams, int, int, const d4*, d4*, d4*, d4*, d4*, int64_t*, int64_t*, \
+      int*, unsigned*, unsigned long long*, double*
+template __global__ void correct_kernel<Dissipation::Off>(H4_CORRECT_ARGS);
+template __global__ void correct_kernel<Dissipation::LinearDrag>(H4_CORRECT_ARGS);
+#undef H4_CORRECT_ARGS
 
 __global__ void potential_kernel(int n, const d4* __restrict__ xall, int ns, int sbase, int chunk, double eps2,
                                  double* __restrict__ pphi) {

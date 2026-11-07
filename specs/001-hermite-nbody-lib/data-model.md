@@ -88,6 +88,8 @@ Each run writes two text files to the output directory:
 - `config.used`: every key, its final value and its source. It is valid input for `config=`.
 - `run_info.txt`: commit, build type, `CMAKE_CUDA_ARCHITECTURES`, CUDA runtime and driver versions, GPU names and compute capabilities, rank count, host name, start time. These are the items of `docs/cuda-best-practices.md` section 6.
 
+The keys of `run_info.txt`, in this order: `tool`, `h4nb_commit` (with `-dirty` for local changes at configure time), `build_type`, `cuda_architectures`, `nvcc_version`, `cuda_runtime_version`, `cuda_driver_version`, `host_compiler`, one `device_<k>` line for each device (`id`, `name`, `cc`, or `error`), `ranks`, `host`, `start_utc`, `command`.
+
 ## 9. Convergence study **(new)**
 
 `h4nb_study` writes `study.dat`. One row for each grid point:

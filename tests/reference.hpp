@@ -12,7 +12,7 @@ class Ref {
  public:
   Ref(const h4nb::Particles& p, const h4nb::Config& c)
       : c_(c), n_(int(p.size())), tick_(c.dt_max / std::ldexp(1.0, c.max_level)), id_(p.id), x_(n_), v_(n_),
-        a_(n_), j_(n_), t_(n_, 0), next_(n_, 0), level_(n_, 0) {
+        a_(n_), j_(n_), t_(n_, 0), next_(n_, 0), level_(n_, 0), wd_(n_, 0.0) {
     for (int i = 0; i < n_; ++i) {
       x_[i] = d4{p.x[i], p.y[i], p.z[i], p.m[i]};
       v_[i] = d4{p.vx[i], p.vy[i], p.vz[i], 0.0};
@@ -37,6 +37,16 @@ class Ref {
   }
   std::vector<int> levels() const { return level_; }
   unsigned status() const { return status_; }
+  // Work of the dissipative forces since t = 0: the sum of the per-particle work in index order (Neumaier), as on the GPU.
+  double w_diss() const {
+    double s = 0, c = 0;
+    for (double x : wd_) {
+      const double t = s + x;
+      c += std::fabs(s) >= std::fabs(x) ? (s - t) + x : (x - t) + s;
+      s = t;
+    }
+    return s + c;
+  }
 
  private:
   void step(bool init) {
@@ -51,14 +61,23 @@ class Ref {
       for (int s = 0; s < n_; ++s)
         if (s != act[k]) h4nb::accumulate(f[k], xp[act[k]], vp[act[k]], xp[s], vp[s], c_.eps2);
     const h4nb::StepParams p = h4nb::make_params(c_, tick_, Tn, init);
+    if (c_.dissipation == h4nb::Dissipation::LinearDrag)
+      update<h4nb::Dissipation::LinearDrag>(p, act, f, vp);
+    else
+      update<h4nb::Dissipation::Off>(p, act, f, vp);
+    T_ = Tn;
+  }
+  // The same per-particle update as correct_kernel. D selects the dissipation model at compile time.
+  template <h4nb::Dissipation D>
+  void update(const h4nb::StepParams& p, const std::vector<int>& act, const std::vector<h4nb::AJ>& f,
+              const std::vector<d4>& vp) {
     for (size_t k = 0; k < act.size(); ++k) {
       const int i = act[k];
       const d4 a1{c_.G * f[k].ax, c_.G * f[k].ay, c_.G * f[k].az, 0.0};
       const d4 j1{c_.G * f[k].jx, c_.G * f[k].jy, c_.G * f[k].jz, 0.0};
-      status_ |= h4nb::update_particle(p, c_.fixed_center && i == 0, a1, j1, f[k].r2min, x_[i], v_[i], a_[i], j_[i],
-                                       t_[i], next_[i], level_[i]);
+      status_ |= h4nb::update_particle_d<D>(p, c_.fixed_center && i == 0, i != 0, a1, j1, vp[i], f[k].r2min, x_[i],
+                                            v_[i], a_[i], j_[i], t_[i], next_[i], level_[i], wd_[i]);
     }
-    T_ = Tn;
   }
 
   h4nb::Config c_;
@@ -68,6 +87,7 @@ class Ref {
   std::vector<d4> x_, v_, a_, j_;
   std::vector<int64_t> t_, next_;
   std::vector<int> level_;
+  std::vector<double> wd_;  // Work of the dissipative force on each particle since t = 0.
   int64_t T_ = 0;
   unsigned status_ = 0;
 };

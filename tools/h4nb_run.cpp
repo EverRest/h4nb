@@ -12,6 +12,7 @@
 #include <vector>
 #include "disk.hpp"
 #include "h4nb/h4nb.hpp"
+#include "run_info.hpp"
 #include "settings.hpp"
 
 using Clock = std::chrono::steady_clock;
@@ -117,8 +118,10 @@ static void declare(Settings& s) {
   s.add("G", T::Real, "1", "Gravitational constant.", Range::gt(0));
   s.add("eps", T::Real, "0", "Plummer softening length. The library receives eps^2.", Range::ge(0));
   s.add("fixed_center", T::Bool, "0", "Particle 0 does not move. Tests and comparisons only.");
-  // Task T041 adds the model linear_drag and its keys drag_tau and drag_vbg.
-  s.add("dissipation", T::Enum, "off", "Dissipation model.", Range::one_of({"off"}));
+  s.add("dissipation", T::Enum, "off", "Dissipation model. linear_drag: a_diss = -(v - drag_vbg) / drag_tau, not on particle 0.",
+        Range::one_of({"off", "linear_drag"}));
+  s.add("drag_tau", T::Real, "0", "Drag time scale. Must be > 0 with dissipation=linear_drag.", Range::ge(0));
+  s.add("drag_vbg", T::RealList, "0,0,0", "Background velocity vx,vy,vz of the drag.", Range().size(3));
   s.add("mode", T::Enum, "block", "Block steps or one shared step.", Range::one_of({"block", "fixed"}));
   s.add("eta", T::Real, "0.01", "Aarseth accuracy parameter.", Range::gt(0));
   s.add("eta_init", T::Real, "0.01", "First step: eta_init*|a|/|j|.", Range::gt(0));
@@ -149,6 +152,8 @@ int main(int argc, char** argv) try {
   // snap=0 means "no interval". It does not conflict with snap_times.
   if (s.real("snap") > 0 && s.has_value("snap_times")) s.fail("snap_times", "do not set it with snap");
   if (s.integer("fixed_level") > s.integer("max_level")) s.fail("fixed_level", "more than max_level");
+  const bool drag = s.str("dissipation") == "linear_drag";
+  if (drag && !(s.real("drag_tau") > 0)) s.fail("drag_tau", "must be > 0 with dissipation=linear_drag");
   const double dt_max = s.real("dt_max");
   const double t_end = s.real("t_end"), diag = s.has_value("diag") ? s.real("diag") : dt_max, snap = s.real("snap");
   // The value v of key k must be n * step with an integer n >= 1 (n >= 0 when zero_ok). The tool does not round it.
@@ -189,6 +194,9 @@ int main(int argc, char** argv) try {
   c.mode = s.str("mode") == "fixed" ? h4nb::StepMode::Fixed : h4nb::StepMode::Block;
   c.fixed_level = s.integer("fixed_level");
   c.fixed_center = s.boolean("fixed_center");
+  c.dissipation = drag ? h4nb::Dissipation::LinearDrag : h4nb::Dissipation::Off;
+  c.drag_tau = s.real("drag_tau");
+  for (int k = 0; k < 3; ++k) c.drag_vbg[k] = s.reals("drag_vbg")[k];
   c.devices = s.ints("devices");
   c.tile = s.integer("tile");
   c.blocks_per_sm = s.integer("blocks_per_sm");
@@ -227,13 +235,15 @@ int main(int argc, char** argv) try {
   std::fflush(stdout);
   std::filesystem::create_directories(out);
   s.write_used(out + "/config.used", "h4nb_run");
+  write_run_info(out + "/run_info.txt", "h4nb_run", c.devices, argc, argv);
   FILE* fe = std::fopen((out + "/energy.dat").c_str(), "w");
   FILE* fm = std::fopen((out + "/momentum.dat").c_str(), "w");
   FILE* ft = std::fopen((out + "/timesteps.dat").c_str(), "w");
   FILE* fp = perf ? std::fopen((out + "/performance.dat").c_str(), "w") : nullptr;
   FILE* fv = std::fopen((out + "/energy_periods.dat").c_str(), "w");
   if (!fe || !fm || !ft || !fv || (perf && !fp)) throw std::runtime_error("cannot write into " + out);
-  std::fprintf(fe, "# time K U E rel_err max_rel_err mean_rel_err\n");
+  // rel_err = |E - E0 - W_diss| / |E0|. W_diss is the work of the dissipative force since t = 0 (0 with dissipation=off).
+  std::fprintf(fe, "# time K U E rel_err max_rel_err mean_rel_err W_diss\n");
   std::fprintf(fm, "# time Px Py Pz Lx Ly Lz dP_rel dL_rel  (changes divided by sum m|v| and sum m|r x v| of the initial state, TZ 7.3)\n");
   std::fprintf(ft, "# time dt_min dt_max dt_mean mean_active_per_block_step r_min\n");
   if (fp) std::fprintf(fp, "# time wall_s block_steps active pairs_per_s\n");
@@ -243,6 +253,11 @@ int main(int argc, char** argv) try {
   const double t_init = since(t0);
   std::printf("N=%zu devices=%zu: init (one full force pass) %.3f s, %.3e pairs/s\n", p.size(), c.devices.size(),
               t_init, N * (N - 1) / t_init);
+  char dissipation_text[160] = "dissipation=off";
+  if (drag)
+    std::snprintf(dissipation_text, sizeof dissipation_text, "dissipation=linear_drag drag_tau=%g drag_vbg=%g,%g,%g",
+                  c.drag_tau, c.drag_vbg[0], c.drag_vbg[1], c.drag_vbg[2]);
+  std::printf("%s\n", dissipation_text);
   const h4nb::Diagnostics d0 = sim.diagnostics();
   bool close_warned = false;
   double max_err = 0, err_sum = 0;
@@ -258,14 +273,15 @@ int main(int argc, char** argv) try {
   if (!(p_scale > 0)) p_scale = 1;
   if (!(l_scale > 0)) l_scale = 1;
   auto write_diag = [&](const h4nb::Diagnostics& d) {
-    const double err = std::fabs((d.E - d0.E) / d0.E);
+    const double err = std::fabs((d.E - d0.E - d.W_diss) / d0.E);
     max_err = std::max(max_err, err);
     err_sum += err;
     ++err_n;
     tracker.add(d.time, err);
     const double dP = std::sqrt(std::pow(d.P[0] - d0.P[0], 2) + std::pow(d.P[1] - d0.P[1], 2) + std::pow(d.P[2] - d0.P[2], 2));
     const double dL = std::sqrt(std::pow(d.L[0] - d0.L[0], 2) + std::pow(d.L[1] - d0.L[1], 2) + std::pow(d.L[2] - d0.L[2], 2));
-    std::fprintf(fe, "%.17g %.17g %.17g %.17g %.6e %.6e %.6e\n", d.time, d.K, d.U, d.E, err, max_err, err_sum / double(err_n));
+    std::fprintf(fe, "%.17g %.17g %.17g %.17g %.6e %.6e %.6e %.17g\n", d.time, d.K, d.U, d.E, err, max_err,
+                 err_sum / double(err_n), d.W_diss);
     std::fprintf(fm, "%.17g %.17g %.17g %.17g %.17g %.17g %.17g %.6e %.6e\n", d.time, d.P[0], d.P[1], d.P[2], d.L[0],
                  d.L[1], d.L[2], dP / p_scale, dL / l_scale);
   };
@@ -322,7 +338,9 @@ int main(int argc, char** argv) try {
   std::printf("t=%g: max |dE/E| = %.3e, mean |dE/E| = %.3e\n", sim.time(), max_err, err_sum / double(err_n));
   tracker.finish(sim.time());
   tracker.write(fv);
-  std::printf("%s\n", tracker.verdict(energy_tol, period_src, s.real("eps"), sim.time()).c_str());
+  std::string verdict = tracker.verdict(energy_tol, period_src, s.real("eps"), sim.time());
+  if (drag) verdict += " (energy balance E - E0 - W_diss, " + std::string(dissipation_text) + ")";
+  std::printf("%s\n", verdict.c_str());
   for (FILE* f : {fe, fm, ft, fp, fv})
     if (f) std::fclose(f);
   // The exit code is 0 for PASS, FAIL and INCOMPLETE. The verdict is a result, not an error.

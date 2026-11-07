@@ -15,9 +15,12 @@ __global__ void force_kernel(int na, const d4* tx, const d4* tv, const int* tid,
                              int sbase, int chunk, double eps2, d4* pa, d4* pj);
 // fa[i] is the sum of rows 0 to nparts-1 of pa (stride na), in row order. .w is the minimum.
 __global__ void sum_partials(int na, int nparts, const d4* pa, const d4* pj, d4* fa, d4* fj);
-__global__ void correct_kernel(int na, const int* act, const d4* fa, const d4* fj, StepParams p, int center, d4* x,
-                               d4* v, d4* a, d4* j, int64_t* t, int64_t* next, int* level, unsigned* status,
-                               unsigned long long* minr2);
+// D selects the dissipation model at compile time. nodrag is the local index of particle 0 on this device, or -1.
+// vp: owned predicted velocities. wd: owned work of the dissipative force. Off does not read vp and wd.
+template <Dissipation D>
+__global__ void correct_kernel(int na, const int* act, const d4* fa, const d4* fj, StepParams p, int center,
+                               int nodrag, const d4* vp, d4* x, d4* v, d4* a, d4* j, int64_t* t, int64_t* next,
+                               int* level, unsigned* status, unsigned long long* minr2, double* wd);
 // Row y of pphi: phi_i is the sum over the sources j > i in chunk y of m_j / sqrt(r^2 + eps2). xall holds all positions in global order.
 __global__ void potential_kernel(int n, const d4* xall, int ns, int sbase, int chunk, double eps2, double* pphi);
 __global__ void sum_phi(int n, int nparts, const double* pphi, double* phi);

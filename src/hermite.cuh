@@ -107,11 +107,14 @@ struct StepParams {
   int max_level;
   int fixed_level;  // 0 or more: Fixed mode. -1: adaptive mode.
   bool init;        // First force evaluation. There is no corrector.
+  double drag_tau;     // LinearDrag only (Config::drag_tau).
+  double drag_vbg[3];  // LinearDrag only (Config::drag_vbg).
 };
 
 inline StepParams make_params(const Config& c, double tick, int64_t T, bool init) {
   return StepParams{T, tick, c.dt_max, c.eta, c.eta_init, c.G, c.r2_close, c.max_level,
-                    c.mode == StepMode::Fixed ? c.fixed_level : -1, init};
+                    c.mode == StepMode::Fixed ? c.fixed_level : -1, init, c.drag_tau,
+                    {c.drag_vbg[0], c.drag_vbg[1], c.drag_vbg[2]}};
 }
 
 // Applies the new force (a1, j1, already multiplied by G) to one active particle. It returns StatusBits.
@@ -143,6 +146,65 @@ H4_HD unsigned update_particle(const StepParams& p, bool is_center, d4 a1, d4 j1
   t = p.T;
   next = p.T + (int64_t(1) << (p.max_level - lv));
   return st;
+}
+
+// Dissipative acceleration at the velocity v (research R7). Use it only for D != Off.
+template <Dissipation D>
+H4_HD d4 dissipation_acc(const StepParams& p, const d4& v) {
+  static_assert(D == Dissipation::LinearDrag, "Add the new model here.");
+  return d4{-(v.x - p.drag_vbg[0]) / p.drag_tau, -(v.y - p.drag_vbg[1]) / p.drag_tau,
+            -(v.z - p.drag_vbg[2]) / p.drag_tau, 0.0};
+}
+
+// Adds the dissipative term to the gravitational a1 and j1 (already multiplied by G) at the predicted velocity vp.
+// LinearDrag: a_tot = a1 + a_diss(vp). j_tot = j1 - a_tot / tau, because d/dt a_diss = -(dv/dt) / tau and dv/dt = a_tot.
+// Off: the function does nothing. The compiler removes it, so the Off path has the same instructions as before.
+template <Dissipation D>
+H4_HD void dissipation_term(const StepParams& p, const d4& vp, d4& a1, d4& j1) {
+  if constexpr (D == Dissipation::LinearDrag) {
+    const d4 ad = dissipation_acc<D>(p, vp);
+    a1 = d4{a1.x + ad.x, a1.y + ad.y, a1.z + ad.z, 0.0};
+    j1 = d4{j1.x - a1.x / p.drag_tau, j1.y - a1.y / p.drag_tau, j1.z - a1.z / p.drag_tau, 0.0};
+  }
+}
+
+// Power m v . a_diss(v) of the dissipative force on a particle with mass m and velocity v.
+template <Dissipation D>
+H4_HD double dissipation_power(const StepParams& p, double m, const d4& v) {
+  const d4 ad = dissipation_acc<D>(p, v);
+  return m * (v.x * ad.x + v.y * ad.y + v.z * ad.z);
+}
+
+// Time derivative of dissipation_power() for a particle with total acceleration a.
+template <Dissipation D>
+H4_HD double dissipation_power_rate(const StepParams& p, double m, const d4& v, const d4& a) {
+  static_assert(D == Dissipation::LinearDrag, "Add the new model here.");
+  const d4 ad = dissipation_acc<D>(p, v);
+  return m * (a.x * ad.x + a.y * ad.y + a.z * ad.z - (v.x * a.x + v.y * a.y + v.z * a.z) / p.drag_tau);
+}
+
+// update_particle() with the dissipation model D. drag is false for particle 0 (the central body).
+// vp is the predicted velocity at the block time p.T. wd is the work of the dissipative force on this particle since t = 0.
+// For D == Off, this is the plain update_particle() call. vp, drag and wd are not used.
+// The work uses the corrected trapezoid rule over each step (4th order, the same order as the Hermite step):
+// W += h/2 (P0 + P1) + h^2/12 (P0' - P1'), with P' = m (a . a_diss + v . d(a_diss)/dt) = m (a . a_diss - v . a / tau).
+// a is the total acceleration that is stored at each end of the step.
+template <Dissipation D>
+H4_HD unsigned update_particle_d(const StepParams& p, bool is_center, bool drag, d4 a1, d4 j1, const d4& vp, double r2min,
+                                 d4& x, d4& v, d4& a, d4& j, int64_t& t, int64_t& next, int& level, double& wd) {
+  if constexpr (D == Dissipation::Off) {
+    return update_particle(p, is_center, a1, j1, r2min, x, v, a, j, t, next, level);
+  } else {
+    if (!drag || is_center) return update_particle(p, is_center, a1, j1, r2min, x, v, a, j, t, next, level);
+    dissipation_term<D>(p, vp, a1, j1);
+    const d4 v0 = v, a0 = a;
+    const double h = double(p.T - t) * p.tick;
+    const unsigned st = update_particle(p, is_center, a1, j1, r2min, x, v, a, j, t, next, level);
+    if (!p.init)
+      wd += 0.5 * h * (dissipation_power<D>(p, x.w, v0) + dissipation_power<D>(p, x.w, v)) +
+            h * h / 12.0 * (dissipation_power_rate<D>(p, x.w, v0, a0) - dissipation_power_rate<D>(p, x.w, v, a));
+    return st;
+  }
 }
 
 }  // namespace h4nb

@@ -93,8 +93,9 @@ description: "Task list for h4nb: configuration, speed, multi-node scale and inp
 
 **Independent check**: `h4nb_run config=<out>/config.used out=<out2>` gives identical `.dat` and `.snap` files.
 
-- [ ] T027 [P] [US6] Add `h4nb::build_info()` to `include/h4nb/h4nb.hpp` and `src/simulation.cu`. Pass the commit and the architectures from CMake as compile definitions.
-- [ ] T028 [US6] In `tools/h4nb_run.cpp`, `h4nb_bench.cpp` and `h4nb_study.cpp`, write `run_info.txt` (data-model.md section 8): build info, driver and runtime versions, GPU names and compute capabilities, rank count, host and start time.
+- [x] T027 [P] [US6] Add `h4nb::build_info()` to `include/h4nb/h4nb.hpp` and `src/simulation.cu`. Pass the commit and the architectures from CMake as compile definitions.
+- [x] T028 [US6] In `tools/h4nb_run.cpp`, `h4nb_bench.cpp` and `h4nb_study.cpp`, write `run_info.txt` (data-model.md section 8): build info, driver and runtime versions, GPU names and compute capabilities, rank count, host and start time.
+- [x] T044 [US6] Add `tools/h4nb_pack.sh`. It packs the logs and the results of one or more run directories into one `.tar.gz` archive with `MANIFEST.txt` (Pavlo, 2026-11-07). Document it in README.md and quickstart.md.
 
 ---
 
@@ -125,9 +126,9 @@ description: "Task list for h4nb: configuration, speed, multi-node scale and inp
 
 **Independent check**: a run with `dissipation=off` gives the same files as before. A run with `dissipation=linear_drag drag_tau=10` reports a balance E − E₀ − W_diss near zero.
 
-- [ ] T041 Add the enum `Dissipation { Off, LinearDrag }` and the fields `dissipation`, `drag_tau`, `drag_vbg` to `h4nb::Config` in `include/h4nb/h4nb.hpp`. Validate them in the `Simulation` constructor.
-- [ ] T042 Add `dissipation_term()` to `src/hermite.cuh` (research R7). Call it in `correct_kernel` and in `tests/reference.hpp` through a template parameter, so that `Off` adds no instruction. Add `W_diss` to `Diagnostics` and integrate it for each particle step.
-- [ ] T043 In `tools/h4nb_run.cpp`, write the `W_diss` column to `energy.dat`. Use E − E₀ − W_diss for the verdict. Print the model and τ in the report header.
+- [x] T041 Add the enum `Dissipation { Off, LinearDrag }` and the fields `dissipation`, `drag_tau`, `drag_vbg` to `h4nb::Config` in `include/h4nb/h4nb.hpp`. Validate them in the `Simulation` constructor.
+- [x] T042 Add `dissipation_term()` to `src/hermite.cuh` (research R7). Call it in `correct_kernel` and in `tests/reference.hpp` through a template parameter, so that `Off` adds no instruction. Add `W_diss` to `Diagnostics` and integrate it for each particle step.
+- [x] T043 In `tools/h4nb_run.cpp`, write the `W_diss` column to `energy.dat`. Use E − E₀ − W_diss for the verdict. Print the model and τ in the report header.
 
 ---
 

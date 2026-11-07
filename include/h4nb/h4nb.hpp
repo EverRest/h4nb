@@ -20,6 +20,9 @@ struct Particles {
 
 enum class StepMode { Block, Fixed };
 
+// Dissipation model (research R7). LinearDrag: a_diss = -(v - drag_vbg) / drag_tau on each particle except particle 0.
+enum class Dissipation { Off, LinearDrag };
+
 // Bits returned by Simulation::status(). A bit stays set after it is set once.
 enum StatusBits : unsigned { kNaN = 1u /* NaN or Inf */, kDtUnderflow = 2u, kClosePair = 4u };
 
@@ -37,11 +40,15 @@ struct Config {
   std::vector<int> devices = {0};  // CUDA device ids. A repeated id emulates more GPUs on one card.
   int tile = 128;             // Targets per block in the force and potential kernels. Allowed: 64, 128, 256.
   int blocks_per_sm = 4;      // Target number of blocks per SM for the source split. Allowed: 1 to 16.
+  Dissipation dissipation = Dissipation::Off;  // Off gives the same bits as a build without the term.
+  double drag_tau = 0;                // LinearDrag: drag time. It must be finite and > 0.
+  double drag_vbg[3] = {0, 0, 0};     // LinearDrag: background velocity. It must be finite.
 };
 
 struct Diagnostics {
   double time = 0, K = 0, U = 0, E = 0;
   double P[3] = {0, 0, 0}, L[3] = {0, 0, 0};
+  double W_diss = 0;  // Work of the dissipative forces since t = 0. 0 when Config::dissipation is Off. E - E0 - W_diss is about 0.
 };
 
 struct Stats {
@@ -73,5 +80,6 @@ class Simulation {
 Particles load_text(const std::string& path);  // Lines "id m x y z vx vy vz". A line that starts with '#' is a comment.
 void write_snapshot(const std::string& path, const Particles& p, double time);
 Particles read_snapshot(const std::string& path, double* time = nullptr);
+std::string build_info();  // "key: value" lines: commit, build type, architectures, CUDA versions, compiler. It does not throw.
 
 }  // namespace h4nb

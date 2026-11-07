@@ -76,6 +76,13 @@ void validate(const Config& c) {
   if (c.tile != BI)
     bad("tile: only 128 is supported. The tile templates (task T017) do not exist yet.");
   if (c.blocks_per_sm < 1 || c.blocks_per_sm > 16) bad("blocks_per_sm must be in [1, 16].");
+  if (c.dissipation != Dissipation::Off && c.dissipation != Dissipation::LinearDrag)
+    bad("dissipation must be Off or LinearDrag.");
+  if (c.dissipation == Dissipation::LinearDrag) {
+    if (!std::isfinite(c.drag_tau) || !(c.drag_tau > 0)) bad("drag_tau must be finite and > 0 for LinearDrag.");
+    for (double u : c.drag_vbg)
+      if (!std::isfinite(u)) bad("drag_vbg must be finite for LinearDrag.");
+  }
 }
 
 }  // namespace
@@ -97,6 +104,7 @@ struct Dev {
   d4 *ra, *rj;                           // Partial sums received from each device for the owned targets (G * n).
   d4 *ca, *cj;                           // Summed force on the owned targets (n).
   double* phi;                           // Potential sums (N).
+  double* wd;                            // Work of the dissipative force on each owned particle since t = 0 (n).
   void* tmp = nullptr;
   size_t tmp_bytes = 0;
   int64_t* h_min = nullptr;              // Pinned host memory.
@@ -169,6 +177,7 @@ struct Simulation::Impl {
       e.ra = e.alloc<d4>(size_t(G) * nn); e.rj = e.alloc<d4>(size_t(G) * nn);
       e.ca = e.alloc<d4>(nn); e.cj = e.alloc<d4>(nn);
       e.phi = e.alloc<double>(NN);
+      e.wd = e.alloc<double>(nn);  // Also with Off: n doubles are cheap, and the pointer is then always valid.
       size_t b1 = 0, b2 = 0;
       H4_CUDA(cub::DeviceReduce::Min(nullptr, b1, e.next, e.dmin, e.n));
       H4_CUDA(cub::DeviceSelect::If(nullptr, b2, thrust::counting_iterator<int>(0), e.act, e.nsel, e.n,
@@ -191,6 +200,7 @@ struct Simulation::Impl {
       H4_CUDA(cudaMemset(e.t, 0, nn * sizeof(int64_t)));
       H4_CUDA(cudaMemset(e.next, 0, nn * sizeof(int64_t)));
       H4_CUDA(cudaMemset(e.level, 0, nn * sizeof(int)));
+      H4_CUDA(cudaMemset(e.wd, 0, nn * sizeof(double)));
       H4_CUDA(cudaMemset(e.status, 0, sizeof(unsigned)));
       const unsigned long long inf_bits = 0x7FF0000000000000ULL;  // Positive infinity.
       H4_CUDA(cudaMemcpy(e.minr2, &inf_bits, sizeof inf_bits, cudaMemcpyHostToDevice));
@@ -300,8 +310,16 @@ struct Simulation::Impl {
         if (h != g) H4_CUDA(cudaStreamWaitEvent(e.s, d[size_t(h)].ev_f, 0));
       if (!m) continue;
       sum_partials<<<blocks(m, 256), 256, 0, e.s>>>(m, G, e.ra, e.rj, e.ca, e.cj);
-      correct_kernel<<<blocks(m, 256), 256, 0, e.s>>>(m, e.act, e.ca, e.cj, sp, (c.fixed_center && g == 0) ? 0 : -1,
-                                                       e.x, e.v, e.a, e.j, e.t, e.next, e.level, e.status, e.minr2);
+      const int center = (c.fixed_center && g == 0) ? 0 : -1, nodrag = g == 0 ? 0 : -1;
+      // Select the dissipation model one time for each launch. The Off instance has no extra arithmetic.
+      if (c.dissipation == Dissipation::LinearDrag)
+        correct_kernel<Dissipation::LinearDrag><<<blocks(m, 256), 256, 0, e.s>>>(
+            m, e.act, e.ca, e.cj, sp, center, nodrag, e.vp, e.x, e.v, e.a, e.j, e.t, e.next, e.level, e.status,
+            e.minr2, e.wd);
+      else
+        correct_kernel<Dissipation::Off><<<blocks(m, 256), 256, 0, e.s>>>(
+            m, e.act, e.ca, e.cj, sp, center, nodrag, e.vp, e.x, e.v, e.a, e.j, e.t, e.next, e.level, e.status,
+            e.minr2, e.wd);
     }
     H4_CUDA(cudaGetLastError());
     T = Tn;
@@ -416,7 +434,13 @@ Diagnostics Simulation::diagnostics() {
   }
   m.sync();
   H4_CUDA(cudaGetLastError());
-  NSum K, U, P[3], L[3];
+  std::vector<double> wd(size_t(m.N), 0.0);
+  if (m.c.dissipation != Dissipation::Off)
+    for (auto& e : m.d) {
+      Impl::use(e);
+      H4_CUDA(cudaMemcpy(wd.data() + e.base, e.wd, size_t(e.n) * sizeof(double), cudaMemcpyDeviceToHost));
+    }
+  NSum K, U, P[3], L[3], W;
   for (size_t i = 0; i < p.size(); ++i) {
     double phi = 0;
     for (int h = 0; h < G; ++h) phi += ph[size_t(h)][i];
@@ -427,12 +451,14 @@ Diagnostics Simulation::diagnostics() {
     L[0].add(mi * (p.y[i] * p.vz[i] - p.z[i] * p.vy[i]));
     L[1].add(mi * (p.z[i] * p.vx[i] - p.x[i] * p.vz[i]));
     L[2].add(mi * (p.x[i] * p.vy[i] - p.y[i] * p.vx[i]));
+    W.add(wd[i]);
   }
   Diagnostics r;
   r.time = time();
   r.K = K.value();
   r.U = -m.c.G * U.value();
   r.E = r.K + r.U;
+  r.W_diss = W.value();
   for (int k = 0; k < 3; ++k) {
     r.P[k] = P[k].value();
     r.L[k] = L[k].value();

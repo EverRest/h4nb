@@ -49,6 +49,17 @@ Tools: `build/h4nb_run`, `build/h4nb_mkdisk`, `build/h4nb_bench`, `build/h4nb_or
 
 `<T>` is the agreed mean orbital period from `h4nb_mkdisk`. For the dimensionless units (G = 1, central mass 1, radius 1), the reference Kepler period is 2π ≈ 6.2832. Rounded up to a multiple of 1/64, this is 6.296875. With `diag=<T/16>`, choose `t_end` and `diag` so that `diag` divides `t_end` (example: `t_end=6.3125 diag=0.0625`). Round it up to a multiple of `dt_max` (default 1/64). `diag` and `t_end` must be multiples of `dt_max`.
 
+## Send the results back
+
+Do these steps for each acceptance run:
+
+1. Create the output directory before the run: `mkdir -p run128k`.
+2. Save the screen output in it: add `2>&1 | tee run128k/stdout.log` to the command.
+3. After the runs, pack all directories into one archive: `tools/h4nb_pack.sh run3 study run128k run1m`.
+4. Send the archive `h4nb_logs_<host>_<UTC time>.tar.gz`.
+
+The archive contains `config.used`, `run_info.txt` (commit, CUDA versions, GPUs), all `.dat` files, the logs, the Nsight profiles, the Slurm logs and `MANIFEST.txt` with the `nvidia-smi` output. Snapshots are not in it. Add `--snap` when you also need them, for example for A7.
+
 ## Without a GPU
 
 CI compiles the library and the tools. CI runs the CPU tests (`ctest -L cpu`) and `h4nb_mkdisk`. This shows that the code compiles. It does not show that the code is correct.

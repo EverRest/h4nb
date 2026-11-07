@@ -14,12 +14,34 @@ endif()
 find_package(CUDAToolkit REQUIRED)
 # Accuracy rule (TZ 4.4): never add --use_fast_math / -ffast-math. NaN checks rely on IEEE compares.
 
-add_library(h4nb src/io.cpp src/kernels.cu src/simulation.cu)
+add_library(h4nb src/io.cpp src/kernels.cu src/simulation.cu src/build_info.cu)
+
+# Build record for h4nb::build_info() (task T027). CMake reads the commit at configure time.
+# A later commit does not change the value until the next configure step.
+set(H4NB_GIT_COMMIT "unknown")
+find_package(Git QUIET)
+if(GIT_FOUND)
+  execute_process(COMMAND ${GIT_EXECUTABLE} rev-parse --short HEAD WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+                  OUTPUT_VARIABLE h4nb_commit OUTPUT_STRIP_TRAILING_WHITESPACE RESULT_VARIABLE h4nb_git_rc ERROR_QUIET)
+  if(h4nb_git_rc EQUAL 0 AND h4nb_commit)
+    set(H4NB_GIT_COMMIT "${h4nb_commit}")
+    execute_process(COMMAND ${GIT_EXECUTABLE} status --porcelain WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+                    OUTPUT_VARIABLE h4nb_git_status OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+    if(h4nb_git_status)
+      string(APPEND H4NB_GIT_COMMIT "-dirty")
+    endif()
+  endif()
+endif()
+# A list of architectures (example: 80;90) becomes "80,90". A ';' separates the definitions.
+string(REPLACE ";" "," h4nb_archs "${CMAKE_CUDA_ARCHITECTURES}")
+set_source_files_properties(src/build_info.cu PROPERTIES COMPILE_DEFINITIONS
+  "H4NB_GIT_COMMIT=\"${H4NB_GIT_COMMIT}\";H4NB_BUILD_TYPE=\"${CMAKE_BUILD_TYPE}\";H4NB_CUDA_ARCHITECTURES=\"${h4nb_archs}\"")
 target_include_directories(h4nb PUBLIC include PRIVATE src)
 
 foreach(tool h4nb_run h4nb_mkdisk h4nb_bench h4nb_order h4nb_study)
   add_executable(${tool} tools/${tool}.cpp)
-  target_include_directories(${tool} PRIVATE tools)
+  # run_info.hpp includes cuda_runtime.h. The h4nb library already links the CUDA runtime.
+  target_include_directories(${tool} PRIVATE tools ${CUDAToolkit_INCLUDE_DIRS})
   target_link_libraries(${tool} PRIVATE h4nb)
 endforeach()
 

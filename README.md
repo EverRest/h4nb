@@ -156,7 +156,9 @@ period=6.283185307179586      # reference period 2*pi for M=1, a=1, G=1
 | `G` | 1 | Gravitational constant. |
 | `eps` | 0 | Plummer softening length ε. The library receives ε². |
 | `fixed_center` | 0 | 1: particle 0 does not move (tests only). |
-| `dissipation` | `off` | Only `off` now. `linear_drag` comes with T041. |
+| `dissipation` | `off` | `off` or `linear_drag`: a_diss = −(v − v_bg)/τ on each particle except particle 0. With `linear_drag`, `rel_err` and the verdict use E − E₀ − W_diss. |
+| `drag_tau` | 0 | Drag time τ. Must be > 0 with `dissipation=linear_drag`. |
+| `drag_vbg` | `0,0,0` | Background velocity v_bg (3 values). |
 | `mode` | `block` | `block` (individual steps) or `fixed` (one shared step). |
 | `eta` | 0.01 | Aarseth accuracy parameter. Use about 0.0005 for 1e-8. |
 | `eta_init` | 0.01 | First step: `eta_init·|a|/|j|`. |
@@ -179,7 +181,6 @@ Keys that are still planned:
 
 | Keys | Task |
 |---|---|
-| `dissipation=linear_drag`, `drag_tau`, `drag_vbg` | T041 to T043 |
 | `tile=64` and `tile=256` | T017, T018 |
 | `device_offset`, `mpi_host_staging` (MPI) | T030, T032 |
 | `sizes`, `tiles`, `bpsm`, `fp64_peak` (`h4nb_bench`) | T019 |
@@ -246,6 +247,23 @@ srun --ntasks-per-node=4 --gpus-per-task=1 --gpu-bind=single:1 \
 
 Launch details: [`docs/multi-node-design.md`](docs/multi-node-design.md) section 3.
 
+### 6.4 ✅ Collect the logs of a GPU run
+
+`tools/h4nb_pack.sh` packs the logs and the results of one or more runs into one `.tar.gz` file. Send this file back from the GPU machine or the cluster.
+
+```bash
+mkdir -p run128k
+build/h4nb_run config=configs/agn.cfg ic=disk128k.snap out=run128k t_end=6.3125 2>&1 | tee run128k/stdout.log
+tools/h4nb_pack.sh run128k study                  # -> h4nb_logs_<host>_<UTC time>.tar.gz
+tools/h4nb_pack.sh -o a1.tar.gz --snap run128k    # own name, snapshots included
+```
+
+- The script packs `config.used`, `run_info.txt`, `*.dat`, `*.log`, `*.out`, `*.err`, `*.txt` and Nsight profiles (`*.nsys-rep`, `*.qdrep`, `*.ncu-rep`, `*.sqlite`) from each directory and its subdirectories.
+- It packs Slurm logs (`slurm-*.out`) from the current directory.
+- It adds `MANIFEST.txt` with the host, the time, the `nvidia-smi` output, the file list and sha256 sums.
+- It does not pack snapshots (`*.snap`), because they can be large. Add `--snap` to pack them.
+- Save the screen output with `tee` as in the example. Otherwise the archive does not contain it.
+
 ## 7. Use the library from C++
 
 ✅ Available now:
@@ -280,7 +298,7 @@ Rules:
 - `advance_to(t)` and `diagnostics()` work only at multiples of `dt_max`.
 - `diagnostics()` costs N²/2 pair evaluations. Call it at an interval.
 - `Simulation` is not copyable. One object owns the GPU buffers.
-- ✅ `Config::tile` (only 128 until T017) and `Config::blocks_per_sm`. The constructor checks every `Config` field and throws `std::invalid_argument` with the field name. 🚧 `dissipation`, `drag_tau`, `drag_vbg` (T041). The defaults give the current results bit for bit. See [`contracts/public-api.md`](specs/001-hermite-nbody-lib/contracts/public-api.md).
+- ✅ `Config::tile` (only 128 until T017) and `Config::blocks_per_sm`. The constructor checks every `Config` field and throws `std::invalid_argument` with the field name. ✅ `Config::dissipation`, `drag_tau`, `drag_vbg` and `Diagnostics::W_diss` (the work of the drag since t = 0). ✅ `h4nb::build_info()` gives the commit, the build type, the architectures and the CUDA versions. The defaults give the current results bit for bit. See [`contracts/public-api.md`](specs/001-hermite-nbody-lib/contracts/public-api.md).
 
 ## 8. Output files
 
@@ -288,14 +306,14 @@ Rules:
 
 | File | Columns |
 |---|---|
-| `energy.dat` | `time K U E rel_err max_rel_err mean_rel_err` |
+| `energy.dat` | `time K U E rel_err max_rel_err mean_rel_err W_diss`. `rel_err` = \|E − E₀ − W_diss\| / \|E₀\|. W_diss is 0 with `dissipation=off`. |
 | `energy_periods.dat` | `period t_start t_end max_rel_err mean_rel_err complete`: one row for each reference period |
 | `momentum.dat` | `time Px Py Pz Lx Ly Lz dP_rel dL_rel` (changes divided by scales from the initial state) |
 | `timesteps.dat` | `time dt_min dt_max dt_mean mean_active_per_block_step r_min` |
 | `performance.dat` | `time wall_s block_steps active pairs_per_s` |
 | `snap_NNNNNN.snap`, `snap_final.snap` | Binary snapshot: header + `id m x y z vx vy vz` arrays |
 | `config.used` | Final configuration: key, value and source of each key |
-| `run_info.txt` 🚧 | Commit, CUDA, driver, GPUs, ranks, host (T028) |
+| `run_info.txt` | Tool, commit, build type, architectures, nvcc, CUDA runtime and driver, GPUs, ranks, host, start time, command line. `h4nb_study` writes it too, and `h4nb_bench` writes it when you give `out=`. |
 
 At the end, `h4nb_run` prints one line that starts with `energy verdict:`. It is `PASS` or `FAIL` for the maximum relative energy error over the first reference period against `energy_tol`, or `INCOMPLETE` when `t_end` is less than the period. For longer runs the line also gives the maximum over all complete periods and the drift. The exit code is 0 for all three verdicts.
 
@@ -335,7 +353,7 @@ ctest --test-dir build -L cpu     # only the tests that need no GPU
 | [Research](specs/001-hermite-nbody-lib/research.md) | Decisions R1 to R8 with reasons and cost estimates |
 | [Data model](specs/001-hermite-nbody-lib/data-model.md) | Entities, device buffers, memory |
 | [Contracts](specs/001-hermite-nbody-lib/contracts/) | Public API, run configuration, file formats |
-| [Tasks](specs/001-hermite-nbody-lib/tasks.md) | Task list T001 to T043 |
+| [Tasks](specs/001-hermite-nbody-lib/tasks.md) | Task list T001 to T044 |
 | [Quickstart](specs/001-hermite-nbody-lib/quickstart.md) | Acceptance runs |
 | [Detailed plan](docs/superpowers/plans/2026-11-07-h4nb.md) | Design decisions D1 to D11, gated optimisations O1 to O9 |
 | [Multi-node design](docs/multi-node-design.md) | MPI layout, launch, determinism across ranks |

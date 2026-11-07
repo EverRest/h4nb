@@ -28,7 +28,7 @@ All tables are text with one header line that starts with `#`.
 
 | File | Columns |
 |---|---|
-| `energy.dat` | `time K U E W_diss rel_err max_rel_err mean_rel_err` (`rel_err` uses E − E₀ − W_diss) |
+| `energy.dat` | `time K U E rel_err max_rel_err mean_rel_err W_diss`. `rel_err` = \|E − E₀ − W_diss\| / \|E₀\|. W_diss is the last column, so the columns 1 to 7 of older files do not move. |
 | `momentum.dat` | `time Px Py Pz Lx Ly Lz dP_rel dL_rel` |
 | `timesteps.dat` | `time dt_min dt_max dt_mean mean_active_per_block_step r_min` |
 | `performance.dat` | `time wall_s block_steps active pairs_per_s` |
@@ -40,3 +40,4 @@ All tables are text with one header line that starts with `#`.
 
 - `config.used`: `key=value  # source` lines. See run-config.md section 6.
 - `run_info.txt`: `key: value` lines. See data-model.md section 8.
+- Log archive: `tools/h4nb_pack.sh RUN_DIR...` writes `h4nb_logs_<host>_<UTC time>.tar.gz`. It contains one top directory with one subdirectory for each RUN_DIR, `slurm/` for Slurm logs, and `MANIFEST.txt` (host, time, `nvidia-smi` output, file sizes, sha256 sums). Snapshots are in it only with `--snap`.

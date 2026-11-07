@@ -15,6 +15,7 @@
 #include <vector>
 #include "disk.hpp"
 #include "h4nb/h4nb.hpp"
+#include "run_info.hpp"
 #include "settings.hpp"
 
 using Clock = std::chrono::steady_clock;
@@ -127,6 +128,7 @@ int main(int argc, char** argv) try {
 
   std::filesystem::create_directories(out);
   s.write_used(out + "/config.used", "h4nb_study");
+  write_run_info(out + "/run_info.txt", "h4nb_study", c.devices, argc, argv);
   FILE* f = std::fopen((out + "/study.dat").c_str(), "w");
   if (!f) throw std::runtime_error("cannot write " + out + "/study.dat");
   std::string t_list;  // The t_ends that the study uses, also when the key has no value.
