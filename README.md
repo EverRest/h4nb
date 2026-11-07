@@ -323,6 +323,7 @@ ctest --test-dir build -L cpu     # only the tests that need no GPU
 | [Detailed plan](docs/superpowers/plans/2026-11-07-h4nb.md) | Design decisions D1 to D11, gated optimisations O1 to O9 |
 | [Multi-node design](docs/multi-node-design.md) | MPI layout, launch, determinism across ranks |
 | [CUDA best practices](docs/cuda-best-practices.md) | Rules for kernels, numerics and errors. Read it before you change code. |
+| Guide (HTML and PDF): [English](docs/guide/h4nb-guide.en.html) ([PDF](docs/guide/h4nb-guide.en.pdf)), [Italiano](docs/guide/h4nb-guide.it.html) ([PDF](docs/guide/h4nb-guide.it.pdf)), [Українська](docs/guide/h4nb-guide.uk.html) ([PDF](docs/guide/h4nb-guide.uk.pdf)) | Overview, configuration, cheat sheet and common problems. `python3 docs/guide/build_guide.py` builds them again. |
 
 ## License
 
