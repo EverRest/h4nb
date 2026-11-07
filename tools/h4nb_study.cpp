@@ -14,6 +14,7 @@
 #include <string>
 #include <vector>
 #include "disk.hpp"
+#include "energy_norm.hpp"
 #include "h4nb/h4nb.hpp"
 #include "run_info.hpp"
 #include "input.hpp"
@@ -44,6 +45,8 @@ static void declare(Settings& s) {
   s.add("tile", T::Int, "128", "Targets per block in the force and potential kernels.", Range::one_of({"64", "128", "256"}));
   s.add("blocks_per_sm", T::Int, "4", "Target blocks per SM for the source split.", Range::between(1, 16));
   s.add("energy_tol", T::Real, "1e-8", "A row passes when max_rel_err <= energy_tol.", Range::gt(0));
+  s.add("energy_norm", T::Enum, "e0", "Relative energy error. e0: divide by |E0|. ku: divide by |K0|+|U0|.",
+        Range::one_of({"e0", "ku"}));
   s.add("r_close", T::Real, "-1", "Close-pair radius. -1: 0.1 of the mean spacing R_rms/N^(1/3). 0: off.",
         Range::ge(0).or_value(-1));
 }
@@ -154,6 +157,7 @@ static int run(int argc, char** argv) try {
         std::fprintf(stderr, "warning: dt_max=%g eta=%g: the first step estimate is not finite. The coarsest level is used.\n", dt, eta);
       const h4nb::Stats st0 = sim.stats();  // The init force pass is in st0. It is not counted.
       const h4nb::Diagnostics d0 = sim.diagnostics();
+      if (const std::string msg = energy_norm_error(s.str("energy_norm"), d0.E); !msg.empty()) throw SettingsError(msg);
       double max_err = 0, err_sum = 0, wall = 0;
       long n_err = 1;  // The t=0 sample has err = 0.
       bool failed = false;
@@ -168,7 +172,7 @@ static int run(int argc, char** argv) try {
               (long long)(st.block_steps - st0.block_steps), false};
         if (!(sim.status() & h4nb::kNaN)) {
           const h4nb::Diagnostics d = sim.diagnostics();
-          const double err = std::fabs((d.E - d0.E) / d0.E);
+          const double err = rel_energy_error(d.E, d0.E, 0, d0.K, d0.U, s.str("energy_norm"));
           failed = !std::isfinite(err);
           max_err = failed ? nan : std::max(max_err, err);  // A failed row shows nan, not the old max (review D8).
           err_sum += err;

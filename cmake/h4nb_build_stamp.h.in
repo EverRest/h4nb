@@ -1,0 +1,4 @@
+// Build record for h4nb::build_info(). Generated at build time by cmake/h4nb_build_stamp.cmake. Do not edit.
+#define H4NB_GIT_COMMIT "@H4NB_GIT_COMMIT@"
+#define H4NB_BUILD_TYPE "@H4NB_BUILD_TYPE@"
+#define H4NB_CUDA_ARCHITECTURES "@H4NB_CUDA_ARCHITECTURES@"

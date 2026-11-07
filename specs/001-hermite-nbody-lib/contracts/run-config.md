@@ -97,6 +97,8 @@ A preset sets defaults only. A file, the environment or the command line can cha
 | `blocks_per_sm` | int | 4 | 1 to 16 | Target blocks per SM for the source split. |
 | `mpi_host_staging` | bool | 0 | 0, 1 | MPI only. Stage the MPI buffers through pinned host memory. Use 1 when the MPI library is not CUDA-aware. Cost: about N × 132 B + 2 × N × 32 B of pinned memory for each rank. |
 
+Runs give bit-identical results only with the same `tile`, the same `blocks_per_sm` and the same SM count per GPU. `run_info.txt` gives `sm_count` for each GPU.
+
 ### Diagnostics and output
 
 | Key | Type | Default | Range | Meaning |
@@ -105,6 +107,7 @@ A preset sets defaults only. A file, the environment or the command line can cha
 | `snap` | real | 0 | multiple of `diag` | Snapshot interval. 0 and no `snap_times`: only the final snapshot (`snap_final.snap`). |
 | `snap_times` | real list | — | multiples of `diag`, ≤ `t_end` | Explicit snapshot times. Do not set it with `snap` > 0. |
 | `energy_tol` | real | 1e-8 | > 0 | Threshold for the pass or fail verdict in the report. It does not change the integration. |
+| `energy_norm` | enum | `e0` | `e0`, `ku` | Denominator of the relative energy error, in `h4nb_run` and `h4nb_study`. `e0`: \|E₀\|. The run stops with exit code 2 when E₀ is 0. `ku`: \|K₀\| + \|U₀\|. Use `ku` when E₀ is 0. |
 | `perf` | bool | 1 | 0, 1 | Write `performance.dat`. |
 
 ### Benchmark and study only

@@ -6,11 +6,14 @@
 #include <climits>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <exception>
+#include <iterator>
 #include <set>
 #include <stdexcept>
 #include <string>
+#include <type_traits>
 #include <utility>
 #include <vector>
 #include "h4nb/h4nb.hpp"
@@ -23,10 +26,44 @@
 namespace h4nb {
 namespace {
 
+// Throws with the device that was current at the failed call, so that the message names the GPU.
 void ck(cudaError_t e, const char* what) {
-  if (e != cudaSuccess) throw std::runtime_error(std::string(what) + ": " + cudaGetErrorString(e));
+  if (e == cudaSuccess) return;
+  int dev = -1;
+  (void)cudaGetDevice(&dev);
+  throw std::runtime_error(std::string(what) + ": " + cudaGetErrorString(e) + " (device " + std::to_string(dev) + ")");
 }
 #define H4_CUDA(call) ck((call), #call)
+
+// Debug mode H4NB_DEBUG_SYNC=1. After a kernel, wait for the stream and check it. The name in the message is the kernel.
+// Without the mode this does nothing, so a normal run has no extra sync. Call it with the device of the stream set.
+void check_launch(bool debug, cudaStream_t s, const char* kernel) {
+  if (!debug) return;
+  ck(cudaGetLastError(), kernel);
+  ck(cudaStreamSynchronize(s), kernel);
+}
+
+// Restores the current CUDA device when the scope ends. It never throws.
+struct DeviceGuard {
+  int saved = -1;
+  DeviceGuard() {
+    if (cudaGetDevice(&saved) != cudaSuccess) saved = -1;
+  }
+  ~DeviceGuard() {
+    if (saved >= 0) (void)cudaSetDevice(saved);
+  }
+  DeviceGuard(const DeviceGuard&) = delete;
+  DeviceGuard& operator=(const DeviceGuard&) = delete;
+};
+
+// Sets failed when the scope ends by an exception. Set ok on the normal path.
+struct FailMark {
+  bool& failed;
+  bool ok = false;
+  ~FailMark() {
+    if (!ok) failed = true;
+  }
+};
 
 int blocks(int n, int b) { return (n + b - 1) / b; }
 
@@ -48,26 +85,36 @@ Split split(int na, int ns, int sms, int bpsm, int tile) {
   return {blocks(ns, chunk), chunk};
 }
 
-// Launch the force_kernel instance for tile. validate() accepts only 64, 128 and 256.
-void launch_force(int tile, dim3 grid, cudaStream_t s, int na, const d4* tx, const d4* tv, const int* tid, int ns,
-                  const d4* sx, const d4* sv, int sbase, int chunk, double eps2, d4* pa, d4* pj) {
-  switch (tile) {
-    case 64: force_kernel<64><<<grid, 64, 0, s>>>(na, tx, tv, tid, ns, sx, sv, sbase, chunk, eps2, pa, pj); break;
-    case 128: force_kernel<128><<<grid, 128, 0, s>>>(na, tx, tv, tid, ns, sx, sv, sbase, chunk, eps2, pa, pj); break;
-    case 256: force_kernel<256><<<grid, 256, 0, s>>>(na, tx, tv, tid, ns, sx, sv, sbase, chunk, eps2, pa, pj); break;
-    default: throw std::logic_error("launch_force: tile must be 64, 128 or 256.");
-  }
+// The tiles that validate() accepts. Each tile is one instance of the force and potential kernels.
+constexpr int kTiles[] = {64, 128, 256};
+
+// Calls f(std::integral_constant<int, tile>) for the tile in kTiles. Throws for another tile. who names the caller.
+template <class F, std::size_t... I>
+void dispatch_tile_at(int tile, const char* who, F& f, std::index_sequence<I...>) {
+  const bool done = ((tile == kTiles[I] && (f(std::integral_constant<int, kTiles[I]>{}), true)) || ...);
+  if (!done) throw std::logic_error(std::string(who) + ": tile must be 64, 128 or 256.");
+}
+template <class F>
+void dispatch_tile(int tile, const char* who, F f) {
+  dispatch_tile_at(tile, who, f, std::make_index_sequence<std::size(kTiles)>{});
 }
 
-// Launch the potential_kernel instance for tile. validate() accepts only 64, 128 and 256.
+// Launch the force_kernel instance for tile.
+void launch_force(int tile, dim3 grid, cudaStream_t s, int na, const d4* tx, const d4* tv, const int* tid, int ns,
+                  const d4* sx, const d4* sv, int sbase, int chunk, double eps2, d4* pa, d4* pj) {
+  dispatch_tile(tile, "launch_force", [&](auto tc) {
+    constexpr int T = decltype(tc)::value;
+    force_kernel<T><<<grid, T, 0, s>>>(na, tx, tv, tid, ns, sx, sv, sbase, chunk, eps2, pa, pj);
+  });
+}
+
+// Launch the potential_kernel instance for tile.
 void launch_potential(int tile, dim3 grid, cudaStream_t s, int n, const d4* xall, int ns, int sbase, int chunk,
                       double eps2, double* pphi) {
-  switch (tile) {
-    case 64: potential_kernel<64><<<grid, 64, 0, s>>>(n, xall, ns, sbase, chunk, eps2, pphi); break;
-    case 128: potential_kernel<128><<<grid, 128, 0, s>>>(n, xall, ns, sbase, chunk, eps2, pphi); break;
-    case 256: potential_kernel<256><<<grid, 256, 0, s>>>(n, xall, ns, sbase, chunk, eps2, pphi); break;
-    default: throw std::logic_error("launch_potential: tile must be 64, 128 or 256.");
-  }
+  dispatch_tile(tile, "launch_potential", [&](auto tc) {
+    constexpr int T = decltype(tc)::value;
+    potential_kernel<T><<<grid, T, 0, s>>>(n, xall, ns, sbase, chunk, eps2, pphi);
+  });
 }
 
 // Neumaier compensated sum (TZ 4.4, 6.1). It reduces round-off error.
@@ -104,7 +151,8 @@ void validate(const Config& c) {
   if (!std::isfinite(c.r2_close) || !(c.r2_close >= 0)) bad("r2_close must be finite and >= 0.");
   if (c.devices.empty()) bad("devices must not be empty.");
   if (c.device_offset < 0) bad("device_offset must be >= 0.");
-  if (c.tile != 64 && c.tile != 128 && c.tile != 256) bad("tile must be 64, 128 or 256.");
+  if (std::find(std::begin(kTiles), std::end(kTiles), c.tile) == std::end(kTiles))
+    bad("tile must be 64, 128 or 256.");
   if (c.blocks_per_sm < 1 || c.blocks_per_sm > 16) bad("blocks_per_sm must be in [1, 16].");
   if (c.dissipation != Dissipation::Off && c.dissipation != Dissipation::LinearDrag)
     bad("dissipation must be Off or LinearDrag.");
@@ -172,6 +220,8 @@ struct Simulation::Impl {
   int part0 = 0;                 // Part of d[0]: 0 for one process, the rank for MPI.
   bool halted = false;           // A device or a rank has set kNaN. advance_to() stops at the next block step.
   std::vector<int> pbase, pn;    // MPI: base and size of each part, in rank order. The counts of the collectives.
+  bool failed_ = false;          // Set when advance_to() or diagnostics() throws. See FailMark and require_ok().
+  bool debug_sync = false;       // H4NB_DEBUG_SYNC=1, read once in the constructor. See check_launch().
 
   static void use(const Dev& e) { H4_CUDA(cudaSetDevice(e.id)); }
   void sync() {
@@ -181,6 +231,19 @@ struct Simulation::Impl {
     }
   }
 
+  // Throws if an earlier advance_to() or diagnostics() failed. The state is then not defined (Q3).
+  void require_ok() const {
+    if (failed_) throw std::runtime_error("h4nb: a previous call failed; the Simulation state is not defined");
+  }
+
+  // Steps to target, then syncs. An exception sets failed_ (Q3).
+  void run_to(int64_t target) {
+    FailMark fm{failed_};
+    while (T < target && !halted) step(false);  // Stops early when a device has set kNaN (A9).
+    sync();
+    fm.ok = true;
+  }
+
   // D6: N is an int. Reject a larger set before the cast.
   static int particle_count(const Particles& p) {
     if (p.size() > size_t(INT_MAX)) throw std::invalid_argument("Simulation: more than INT_MAX particles.");
@@ -188,6 +251,9 @@ struct Simulation::Impl {
   }
 
   Impl(const Particles& p, const Config& cfg) : c(cfg), N(particle_count(p)) {
+    DeviceGuard dev_guard;  // Restores the caller's device (Q2).
+    const char* dbg = std::getenv("H4NB_DEBUG_SYNC");
+    debug_sync = dbg && std::strcmp(dbg, "1") == 0;
     // Q1: the destructor does not run when a constructor throws. So release the CUDA resources here.
     // release() is safe to call twice: the second call finds d empty.
     try {
@@ -443,6 +509,7 @@ struct Simulation::Impl {
                                                               f[2][g].data().get(), f[3][g].data().get(), p, c.eps2,
                                                               c.dissipation == Dissipation::LinearDrag, center, e.level,
                                                               e.next, e.status);
+      check_launch(debug_sync, e.s, "init_level_kernel");
     }
     sync();
     H4_CUDA(cudaGetLastError());
@@ -496,6 +563,7 @@ struct Simulation::Impl {
     for (auto& e : d) {
       use(e);
       predict_kernel<<<blocks(e.n, 256), 256, 0, e.s>>>(e.n, e.x, e.v, e.a, e.j, e.t, Tn, tick, e.xp, e.vp);
+      check_launch(debug_sync, e.s, "predict_kernel");
       size_t bytes = e.tmp_bytes;
       H4_CUDA(cub::DeviceSelect::If(e.tmp, bytes, thrust::counting_iterator<int>(0), e.act, e.nsel, e.n,
                                     IsActive{e.next, Tn}, e.s));
@@ -517,6 +585,7 @@ struct Simulation::Impl {
       const int o = off[size_t(g)], m = na[size_t(g)];
       use(e);
       if (m) gather_kernel<<<blocks(m, 256), 256, 0, e.s>>>(m, e.act, e.xp, e.vp, e.base, e.tx + o, e.tv + o, e.tid + o);
+      check_launch(debug_sync, e.s, "gather_kernel");
       for (int h = 0; h < G; ++h) {
         if (h == g) continue;
         copy(d[size_t(h)].tx + o, e.tx + o, size_t(m) * sizeof(d4), e.s);
@@ -534,7 +603,9 @@ struct Simulation::Impl {
       const Split sp = split(NA, e.n, e.sms, c.blocks_per_sm, c.tile);
       launch_force(c.tile, dim3(unsigned(blocks(NA, c.tile)), unsigned(sp.nj)), e.s, NA, e.tx, e.tv, e.tid, e.n, e.xp,
                    e.vp, e.base, sp.chunk, c.eps2, e.pa, e.pj);
+      check_launch(debug_sync, e.s, "force_kernel");
       sum_partials<<<blocks(NA, 256), 256, 0, e.s>>>(NA, sp.nj, e.pa, e.pj, e.fa, e.fj);
+      check_launch(debug_sync, e.s, "sum_partials");
       for (int g = 0; g < G; ++g) {
         const size_t m = size_t(na[size_t(g)]), row = size_t(h) * m;
         copy(d[size_t(g)].ra + row, e.fa + off[size_t(g)], m * sizeof(d4), e.s);
@@ -552,6 +623,7 @@ struct Simulation::Impl {
         if (h != g) H4_CUDA(cudaStreamWaitEvent(e.s, d[size_t(h)].ev_f, 0));
       if (!m) continue;
       sum_partials<<<blocks(m, 256), 256, 0, e.s>>>(m, G, e.ra, e.rj, e.ca, e.cj);
+      check_launch(debug_sync, e.s, "sum_partials");
       const int center = (c.fixed_center && g == 0) ? 0 : -1, nodrag = g == 0 ? 0 : -1;
       // Select the dissipation model one time for each launch. The Off instance has no extra arithmetic.
       if (c.dissipation == Dissipation::LinearDrag)
@@ -562,6 +634,7 @@ struct Simulation::Impl {
         correct_kernel<Dissipation::Off><<<blocks(m, 256), 256, 0, e.s>>>(
             m, e.act, e.ca, e.cj, sp, center, nodrag, e.vp, e.x, e.v, e.a, e.j, e.t, e.next, e.level, e.status,
             e.minr2, e.wd);
+      check_launch(debug_sync, e.s, "correct_kernel");
     }
     H4_CUDA(cudaGetLastError());
     T = Tn;
@@ -607,6 +680,7 @@ struct Simulation::Impl {
       Tn = v[0];
     }
     predict_kernel<<<blocks(e.n, 256), 256, 0, e.s>>>(e.n, e.x, e.v, e.a, e.j, e.t, Tn, tick, e.xp, e.vp);
+    check_launch(debug_sync, e.s, "predict_kernel");
     size_t bytes = e.tmp_bytes;
     H4_CUDA(cub::DeviceSelect::If(e.tmp, bytes, thrust::counting_iterator<int>(0), e.act, e.nsel, e.n,
                                   IsActive{e.next, Tn}, e.s));
@@ -620,6 +694,7 @@ struct Simulation::Impl {
     mx.active_hist[log2_bin(uint64_t(NA))]++;
     const int m = na[size_t(r)], o = off[size_t(r)];
     if (m) gather_kernel<<<blocks(m, 256), 256, 0, e.s>>>(m, e.act, e.xp, e.vp, e.base, e.tx + o, e.tv + o, e.tid + o);
+    check_launch(debug_sync, e.s, "gather_kernel");
     if (stage) {
       copy(e.h_tx + o, e.tx + o, size_t(m) * sizeof(d4), e.s);
       copy(e.h_tv + o, e.tv + o, size_t(m) * sizeof(d4), e.s);
@@ -639,7 +714,9 @@ struct Simulation::Impl {
     const Split sp = split(NA, e.n, e.sms, c.blocks_per_sm, c.tile);
     launch_force(c.tile, dim3(unsigned(blocks(NA, c.tile)), unsigned(sp.nj)), e.s, NA, e.tx, e.tv, e.tid, e.n, e.xp,
                  e.vp, e.base, sp.chunk, c.eps2, e.pa, e.pj);
+    check_launch(debug_sync, e.s, "force_kernel");
     sum_partials<<<blocks(NA, 256), 256, 0, e.s>>>(NA, sp.nj, e.pa, e.pj, e.fa, e.fj);
+    check_launch(debug_sync, e.s, "sum_partials");
     if (stage) {
       copy(e.h_fa, e.fa, size_t(NA) * sizeof(d4), e.s);
       copy(e.h_fj, e.fj, size_t(NA) * sizeof(d4), e.s);
@@ -659,6 +736,7 @@ struct Simulation::Impl {
       }
       const StepParams prm = make_params(c, tick, Tn, init);
       sum_partials<<<blocks(m, 256), 256, 0, e.s>>>(m, P, e.ra, e.rj, e.ca, e.cj);
+      check_launch(debug_sync, e.s, "sum_partials");
       const int center = (c.fixed_center && r == 0) ? 0 : -1, nodrag = r == 0 ? 0 : -1;
       if (c.dissipation == Dissipation::LinearDrag)
         correct_kernel<Dissipation::LinearDrag><<<blocks(m, 256), 256, 0, e.s>>>(
@@ -668,6 +746,7 @@ struct Simulation::Impl {
         correct_kernel<Dissipation::Off><<<blocks(m, 256), 256, 0, e.s>>>(
             m, e.act, e.ca, e.cj, prm, center, nodrag, e.vp, e.x, e.v, e.a, e.j, e.t, e.next, e.level, e.status,
             e.minr2, e.wd);
+      check_launch(debug_sync, e.s, "correct_kernel");
     }
     H4_CUDA(cudaGetLastError());
     T = Tn;
@@ -684,10 +763,15 @@ struct Simulation::Impl {
 };
 
 Simulation::Simulation(const Particles& p, const Config& c) : impl_(std::make_unique<Impl>(p, c)) {}
-Simulation::~Simulation() = default;
+Simulation::~Simulation() {
+  DeviceGuard dev_guard;
+  impl_.reset();  // Frees the memory on the devices of this Simulation.
+}
 
 void Simulation::advance_to(double t) {
+  DeviceGuard dev_guard;
   Impl& m = *impl_;
+  m.require_ok();
   if (!std::isfinite(t)) throw std::invalid_argument("advance_to: t must be finite");  // L7: before the int64 cast.
   const double q = t / m.c.dt_max, r = std::nearbyint(q);
   if (std::fabs(q - r) > 1e-9 * std::max(1.0, std::fabs(q)))
@@ -697,15 +781,11 @@ void Simulation::advance_to(double t) {
   if (target < m.T) throw std::invalid_argument("advance_to: t is before time()");
 #ifdef H4NB_HAVE_MPI
   if (m.mpi) {  // The checks above give the same result on all ranks. So they throw on all ranks or on none.
-    m.guard([&] {
-      while (m.T < target && !m.halted) m.step(false);  // Stops early when a rank has set kNaN (task T034).
-      m.sync();
-    });
+    m.guard([&] { m.run_to(target); });  // Stops early when a rank has set kNaN (task T034).
     return;
   }
 #endif
-  while (m.T < target && !m.halted) m.step(false);  // Stops early when a device has set kNaN (A9).
-  m.sync();
+  m.run_to(target);  // Stops early when a device has set kNaN (A9).
 }
 
 double Simulation::time() const { return double(impl_->T) * impl_->tick; }
@@ -719,7 +799,9 @@ Metrics Simulation::metrics(bool reset) {
 }
 
 Stats Simulation::stats() const {
+  DeviceGuard dev_guard;
   Impl& m = *impl_;
+  m.require_ok();
 #ifdef H4NB_HAVE_MPI
   if (m.mpi)  // The counts are the same on all ranks (NA is global). min_r2: MIN over the ranks, exact.
     return m.guard([&] {
@@ -746,7 +828,9 @@ Stats Simulation::stats() const {
 }
 
 Particles Simulation::state() const {
+  DeviceGuard dev_guard;
   Impl& m = *impl_;
+  m.require_ok();
 #ifdef H4NB_HAVE_MPI
   // MPI: each rank downloads its part. MPI_Allgatherv gives every rank the full set in global order.
   // ponytail: N * 64 B to every rank. Upgrade: MPI_Gatherv to rank 0 only, if a measurement needs it.
@@ -774,7 +858,9 @@ Particles Simulation::state() const {
 }
 
 std::vector<int> Simulation::levels() const {
+  DeviceGuard dev_guard;
   Impl& m = *impl_;
+  m.require_ok();
 #ifdef H4NB_HAVE_MPI
   if (m.mpi)  // Every rank gets all levels in global order (MPI_Allgatherv).
     return m.guard([&] {
@@ -798,7 +884,9 @@ std::vector<int> Simulation::levels() const {
 }
 
 unsigned Simulation::status() const {
+  DeviceGuard dev_guard;
   Impl& m = *impl_;
+  m.require_ok();
 #ifdef H4NB_HAVE_MPI
   if (m.mpi)  // MPI_BOR over the ranks: every rank gets the same bits.
     return m.guard([&] {
@@ -825,9 +913,16 @@ unsigned Simulation::status() const {
 // in a fixed order, with Neumaier summation.
 // ponytail: downloads N doubles per device and the state. This is fine at a diagnostic interval. Upgrade: GPU tree reduction.
 Diagnostics Simulation::diagnostics() {
+  DeviceGuard dev_guard;
   Impl& m = *impl_;
+  m.require_ok();
+  FailMark fm{m.failed_};
 #ifdef H4NB_HAVE_MPI
-  if (m.mpi) return m.guard([&] { return m.diagnostics_mpi(); });
+  if (m.mpi) {
+    Diagnostics r = m.guard([&] { return m.diagnostics_mpi(); });
+    fm.ok = true;
+    return r;
+  }
 #endif
   const Particles p = state();
   const int G = int(m.d.size());
@@ -846,7 +941,9 @@ Diagnostics Simulation::diagnostics() {
     double* pp = reinterpret_cast<double*>(e.pa);  // N * nj doubles fit in pcap d4 entries.
     launch_potential(m.c.tile, dim3(unsigned(blocks(m.N, m.c.tile)), unsigned(sp.nj)), e.s, m.N, e.tx, e.n, e.base,
                      sp.chunk, m.c.eps2, pp);
+    check_launch(m.debug_sync, e.s, "potential_kernel");
     sum_phi<<<blocks(m.N, 256), 256, 0, e.s>>>(m.N, sp.nj, pp, e.phi);
+    check_launch(m.debug_sync, e.s, "sum_phi");
     H4_CUDA(cudaMemcpyAsync(ph[size_t(h)].data(), e.phi, size_t(m.N) * sizeof(double), cudaMemcpyDeviceToHost, e.s));
   }
   m.sync();
@@ -880,6 +977,7 @@ Diagnostics Simulation::diagnostics() {
     r.P[k] = P[k].value();
     r.L[k] = L[k].value();
   }
+  fm.ok = true;
   return r;
 }
 
@@ -929,7 +1027,9 @@ Diagnostics Simulation::Impl::diagnostics_mpi() {
   double* pp = reinterpret_cast<double*>(e.pa);  // N * nj doubles fit in pcap d4 entries.
   launch_potential(m.c.tile, dim3(unsigned(blocks(m.N, m.c.tile)), unsigned(sp.nj)), e.s, m.N, e.tx, e.n, e.base,
                    sp.chunk, m.c.eps2, pp);
+  check_launch(m.debug_sync, e.s, "potential_kernel");
   sum_phi<<<blocks(m.N, 256), 256, 0, e.s>>>(m.N, sp.nj, pp, e.phi);
+  check_launch(m.debug_sync, e.s, "sum_phi");
   std::vector<double> ph(NN), wd(size_t(e.n), 0.0);
   H4_CUDA(cudaMemcpyAsync(ph.data(), e.phi, NN * sizeof(double), cudaMemcpyDeviceToHost, e.s));
   if (m.c.dissipation != Dissipation::Off)

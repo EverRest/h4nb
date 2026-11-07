@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
-project(h4nb LANGUAGES CXX CUDA)
+project(h4nb VERSION 0.1.0 LANGUAGES CXX CUDA)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -13,13 +13,19 @@ endif()
 #   cmake -S . -B build -DCMAKE_CUDA_ARCHITECTURES=90        # GH200 / H100
 #   cmake -S . -B build -DCMAKE_CUDA_ARCHITECTURES="89;90"   # both
 # The build sets no host-specific flag (no -march, no x86 intrinsics). So it also works on aarch64 (GH200).
+# A GPU-less build host (for example a login node) cannot use "native". Set the list there, for example "89;90".
 if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
   set(CMAKE_CUDA_ARCHITECTURES native)
 endif()
 find_package(CUDAToolkit REQUIRED)
+# Line tables for Nsight source view and compute-sanitizer. They do not change the generated code.
+add_compile_options($<$<COMPILE_LANGUAGE:CUDA>:-lineinfo>)
 # Accuracy rule (TZ 4.4): never add --use_fast_math / -ffast-math. NaN checks rely on IEEE compares.
 
 add_library(h4nb src/io.cpp src/kernels.cu src/simulation.cu src/build_info.cu)
+add_library(h4nb::h4nb ALIAS h4nb)
+# The public header has no CUDA type, so CUDA::cudart is a private link.
+target_link_libraries(h4nb PRIVATE CUDA::cudart)
 
 # Optional MPI path (tasks T029 to T036, docs/multi-node-design.md). Default OFF: the build then has no MPI dependency.
 # With ON, src/mpi_comm.cpp holds all MPI calls. Only that file includes mpi.h. simulation.cu calls it through the
@@ -31,62 +37,66 @@ if(H4NB_MPI)
   set_source_files_properties(src/mpi_comm.cpp PROPERTIES COMPILE_DEFINITIONS "OMPI_SKIP_MPICXX=1;MPICH_SKIP_MPICXX=1")
   set_property(SOURCE src/simulation.cu src/mpi_comm.cpp src/build_info.cu APPEND PROPERTY COMPILE_DEFINITIONS H4NB_HAVE_MPI=1)
   target_link_libraries(h4nb PRIVATE MPI::MPI_CXX)
-  target_include_directories(h4nb PRIVATE ${CUDAToolkit_INCLUDE_DIRS})
 else()
   target_sources(h4nb PRIVATE src/single_rank.cpp)
 endif()
 
-# Build record for h4nb::build_info() (task T027). CMake reads the commit at configure time.
-# A later commit does not change the value until the next configure step.
-set(H4NB_GIT_COMMIT "unknown")
-find_package(Git QUIET)
-if(GIT_FOUND)
-  execute_process(COMMAND ${GIT_EXECUTABLE} rev-parse --short HEAD WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
-                  OUTPUT_VARIABLE h4nb_commit OUTPUT_STRIP_TRAILING_WHITESPACE RESULT_VARIABLE h4nb_git_rc ERROR_QUIET)
-  if(h4nb_git_rc EQUAL 0 AND h4nb_commit)
-    set(H4NB_GIT_COMMIT "${h4nb_commit}")
-    execute_process(COMMAND ${GIT_EXECUTABLE} status --porcelain WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
-                    OUTPUT_VARIABLE h4nb_git_status OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
-    if(h4nb_git_status)
-      string(APPEND H4NB_GIT_COMMIT "-dirty")
-    endif()
-  endif()
-endif()
-# A build from a source archive has no Git data. Then CMake uses H4NB_SOURCE_VERSION (example: v0.1.0).
+# Build record for h4nb::build_info() (task T027). The header is written at every build, so a new commit is
+# recorded at the next build. cmake/h4nb_build_stamp.cmake rewrites it only when the text changes.
+set(H4NB_STAMP_DIR ${CMAKE_BINARY_DIR}/generated)
+set(H4NB_STAMP_HEADER ${H4NB_STAMP_DIR}/h4nb_build_stamp.h)
+# A build from a source archive has no Git data. Then the build record uses H4NB_SOURCE_VERSION (example: v0.1.0).
 # The Spack recipe sets it for release versions.
 set(H4NB_SOURCE_VERSION "" CACHE STRING "Source version for build_info() when Git cannot give the commit")
-if(H4NB_GIT_COMMIT STREQUAL "unknown" AND H4NB_SOURCE_VERSION)
-  set(H4NB_GIT_COMMIT "${H4NB_SOURCE_VERSION}")
-endif()
-# A list of architectures (example: 80;90) becomes "80,90". A ';' separates the definitions.
+# A list of architectures (example: 80;90) becomes "80,90". A ';' separates the arguments of the script.
 string(REPLACE ";" "," h4nb_archs "${CMAKE_CUDA_ARCHITECTURES}")
-set_property(SOURCE src/build_info.cu APPEND PROPERTY COMPILE_DEFINITIONS
-  "H4NB_GIT_COMMIT=\"${H4NB_GIT_COMMIT}\";H4NB_BUILD_TYPE=\"${CMAKE_BUILD_TYPE}\";H4NB_CUDA_ARCHITECTURES=\"${h4nb_archs}\"")
-target_include_directories(h4nb PUBLIC include PRIVATE src)
+add_custom_target(h4nb_build_stamp
+  COMMAND ${CMAKE_COMMAND} -DSRC_DIR=${CMAKE_SOURCE_DIR} -DOUT=${H4NB_STAMP_HEADER}
+          -DH4NB_BUILD_TYPE=${CMAKE_BUILD_TYPE} -DH4NB_CUDA_ARCHITECTURES=${h4nb_archs}
+          -DH4NB_SOURCE_VERSION=${H4NB_SOURCE_VERSION}
+          -P ${CMAKE_SOURCE_DIR}/cmake/h4nb_build_stamp.cmake
+  BYPRODUCTS ${H4NB_STAMP_HEADER}
+  VERBATIM)
+add_dependencies(h4nb h4nb_build_stamp)
+target_include_directories(h4nb
+  PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include> $<INSTALL_INTERFACE:include>
+  PRIVATE src ${H4NB_STAMP_DIR})
 
 foreach(tool h4nb_run h4nb_mkdisk h4nb_bench h4nb_order h4nb_study)
   add_executable(${tool} tools/${tool}.cpp)
-  # run_info.hpp includes cuda_runtime.h. The h4nb library already links the CUDA runtime.
-  target_include_directories(${tool} PRIVATE tools ${CUDAToolkit_INCLUDE_DIRS})
-  target_link_libraries(${tool} PRIVATE h4nb)
+  # run_info.hpp includes cuda_runtime.h.
+  target_include_directories(${tool} PRIVATE tools)
+  target_link_libraries(${tool} PRIVATE h4nb CUDA::cudart)
 endforeach()
 
 # Install rules (for "cmake --install" and for Spack, see docs/spack.md).
 # The install puts the library, the public header, the tools and the example configs into the prefix.
 include(GNUInstallDirs)
-install(TARGETS h4nb h4nb_run h4nb_mkdisk h4nb_bench h4nb_order h4nb_study
+install(TARGETS h4nb EXPORT h4nbTargets
         ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
         LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
         RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+install(TARGETS h4nb_run h4nb_mkdisk h4nb_bench h4nb_order h4nb_study
+        RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 install(DIRECTORY include/ DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
 install(DIRECTORY configs/ DESTINATION ${CMAKE_INSTALL_DATADIR}/h4nb/configs)
+# CMake package: find_package(h4nb) gives the target h4nb::h4nb.
+include(CMakePackageConfigHelpers)
+install(EXPORT h4nbTargets FILE h4nbTargets.cmake NAMESPACE h4nb:: DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/h4nb)
+configure_package_config_file(${CMAKE_CURRENT_SOURCE_DIR}/cmake/h4nbConfig.cmake.in
+  ${CMAKE_CURRENT_BINARY_DIR}/h4nbConfig.cmake
+  INSTALL_DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/h4nb)
+write_basic_package_version_file(${CMAKE_CURRENT_BINARY_DIR}/h4nbConfigVersion.cmake
+  COMPATIBILITY SameMinorVersion)
+install(FILES ${CMAKE_CURRENT_BINARY_DIR}/h4nbConfig.cmake ${CMAKE_CURRENT_BINARY_DIR}/h4nbConfigVersion.cmake
+        DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/h4nb)
 
 # Tests. Label cpu: runs without a GPU. Label gpu: needs a CUDA device.
 enable_testing()
 function(h4nb_add_test name src label)
   add_executable(${name} ${src})
-  target_include_directories(${name} PRIVATE src tools tests ${CUDAToolkit_INCLUDE_DIRS})
-  target_link_libraries(${name} PRIVATE h4nb)
+  target_include_directories(${name} PRIVATE src tools tests)
+  target_link_libraries(${name} PRIVATE h4nb CUDA::cudart)
   add_test(NAME ${name} COMMAND ${name})
   set_tests_properties(${name} PROPERTIES LABELS ${label})
 endfunction()

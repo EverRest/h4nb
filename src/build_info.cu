@@ -1,20 +1,10 @@
 // h4nb::build_info() (task T027, data-model.md section 8, docs/cuda-best-practices.md section 6).
-// CMake gives H4NB_GIT_COMMIT, H4NB_BUILD_TYPE and H4NB_CUDA_ARCHITECTURES to this file only.
-// CMake also gives H4NB_HAVE_MPI when the build option H4NB_MPI is ON.
-// The commit is the commit at configure time. A later commit without a new configure step does not change it.
+// The header h4nb_build_stamp.h gives H4NB_GIT_COMMIT, H4NB_BUILD_TYPE and H4NB_CUDA_ARCHITECTURES.
+// CMake writes it at every build. CMake gives H4NB_HAVE_MPI to this file when the build option H4NB_MPI is ON.
 #include <cuda_runtime.h>
 #include <string>
 #include "h4nb/h4nb.hpp"
-
-#ifndef H4NB_GIT_COMMIT
-#define H4NB_GIT_COMMIT "unknown"
-#endif
-#ifndef H4NB_BUILD_TYPE
-#define H4NB_BUILD_TYPE "unknown"
-#endif
-#ifndef H4NB_CUDA_ARCHITECTURES
-#define H4NB_CUDA_ARCHITECTURES "unknown"
-#endif
+#include "h4nb_build_stamp.h"
 
 namespace h4nb {
 namespace {

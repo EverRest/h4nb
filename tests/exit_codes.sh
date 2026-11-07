@@ -34,6 +34,8 @@ expect 2 "G=-1 (cli): out of range (> 0)" "$run" ic="$dir/ok.txt" out="$dir/r4" 
 expect 2 "must be >= 2" "$study" ic="$dir/one.txt" out="$dir/s1" diag=1               # one particle
 expect 2 "eta_init" "$run" ic="$dir/ok.txt" out="$dir/r5" t_end=1 eta_init=-1         # bad eta_init (>= 0 is valid)
 expect 2 "eta_init" "$study" ic="$dir/ok.txt" out="$dir/s2" diag=1 eta_init=-1        # bad eta_init (study)
+expect 2 "energy_norm" "$run" ic="$dir/ok.txt" out="$dir/r6" t_end=1 energy_norm=l2  # bad energy_norm (run)
+expect 2 "energy_norm" "$study" ic="$dir/ok.txt" out="$dir/s3" diag=1 energy_norm=l2 # bad energy_norm (study)
 
 if [ "$fails" -ne 0 ]; then
   echo "exit_codes: $fails check(s) failed" >&2

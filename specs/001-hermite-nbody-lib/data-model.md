@@ -75,11 +75,13 @@ The full key list is in [contracts/run-config.md](contracts/run-config.md).
 `h4nb::Diagnostics`: time, K, U, E, P[3], L[3], **(new)** W_diss (0 when dissipation is off). Computed only at sync points (multiples of `dt_max`). U uses the same softening as the force. Sums use a fixed order and Neumaier summation (plan D6).
 
 The tool derives: relative energy error, max and mean relative error over the reference period, dP_rel and dL_rel with scales from the initial state (FR-013).
+The relative energy error is |E - E0 - W_diss| divided by a norm. The key `energy_norm` selects the norm: `e0` (default) uses |E0|, `ku` uses |K0| + |U0|. With `e0` and E0 = 0, the tool stops with an input error (exit 2).
 
 ## 7. Stats and status
 
 - `h4nb::Stats`: `block_steps`, `active_total`, `min_r2`.
-- `StatusBits`: `kNaN` (NaN or Inf), `kDtUnderflow`, `kClosePair`. A bit stays set.
+- `StatusBits`: `kNaN` (NaN or Inf), `kDtUnderflow`, `kClosePair`, `kInitStepInvalid` (the first-step estimate is not finite or not positive; the coarsest level is used). A bit stays set.
+- **(new)** `h4nb::Metrics`: `block_steps`, `active_total`, histograms of the active-block size and of the block level, `init_force_s` (first force pass) and `init_levels_s` (initial levels). `metrics(reset)` does not clear the two init times.
 
 ## 8. Run record **(new)**
 
@@ -88,7 +90,7 @@ Each run writes two text files to the output directory:
 - `config.used`: every key, its final value and its source. It is valid input for `config=`.
 - `run_info.txt`: commit, build type, `CMAKE_CUDA_ARCHITECTURES`, CUDA runtime and driver versions, GPU names and compute capabilities, rank count, host name, start time. These are the items of `docs/cuda-best-practices.md` section 6.
 
-The keys of `run_info.txt`, in this order: `tool`, `h4nb_commit` (with `-dirty` for local changes at configure time), `build_type`, `cuda_architectures`, `nvcc_version`, `cuda_runtime_version`, `cuda_driver_version`, `host_compiler`, `mpi` (`on` or `off`, the build option `H4NB_MPI`), one `device_<k>` line for each device (`id`, `name`, `cc`, or `error`; one rank only), `ranks`, then with more than one rank `mpi_library` and one `rank_<r>` line for each rank (`host`, `local_rank`, `device`, `name`, `cc`, or `error`), `host`, `start_utc`, `command`. With more than one rank, only rank 0 writes the file.
+The keys of `run_info.txt`, in this order: `tool`, `h4nb_commit` (recorded at build time, with `-dirty` for local changes to tracked files; untracked files do not count), `build_type`, `cuda_architectures`, `nvcc_version`, `cuda_runtime_version`, `cuda_driver_version`, `host_compiler`, `mpi` (`on` or `off`, the build option `H4NB_MPI`), one `device_<k>` line for each device (`id`, `name`, `cc`, `sm_count`, or `error`; one rank only), `ranks`, then with more than one rank `mpi_library` and one `rank_<r>` line for each rank (`host`, `local_rank`, `device`, `name`, `cc`, `sm_count`, or `error`), `host`, `start_utc`, `command`. With more than one rank, only rank 0 writes the file.
 
 ## 9. Convergence study **(new)**
 
@@ -96,4 +98,4 @@ The keys of `run_info.txt`, in this order: `tool`, `h4nb_commit` (with `-dirty` 
 
 `eta dt_max t_end max_rel_err mean_rel_err final_rel_err dP_rel dL_rel block_steps pair_evals wall_s pass`
 
-`pass` is 1 when `max_rel_err <= energy_tol`.
+`pass` is 1 when `max_rel_err <= energy_tol`. The relative errors use the norm of `energy_norm` (section 6). A non-finite error gives `pass` 0.

@@ -24,7 +24,7 @@ inline void write_run_info(const std::string& path, const std::string& tool, con
     const cudaError_t e = cudaGetDeviceProperties(&prop, devices[k]);
     if (e == cudaSuccess)
       s += key + "id=" + std::to_string(devices[k]) + " name=" + prop.name + " cc=" + std::to_string(prop.major) + "." +
-           std::to_string(prop.minor) + "\n";
+           std::to_string(prop.minor) + " sm_count=" + std::to_string(prop.multiProcessorCount) + "\n";
     else
       s += key + "id=" + std::to_string(devices[k]) + " error=" + cudaGetErrorString(e) + "\n";
   }

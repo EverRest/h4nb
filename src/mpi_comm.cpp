@@ -9,6 +9,7 @@
 #include <cuda_runtime.h>
 #include <unistd.h>
 #include <cstdio>
+#include <algorithm>
 #include <cstdlib>
 #include <stdexcept>
 #include <string>
@@ -33,6 +34,7 @@ bool initialized() {
 struct State {
   bool made = false;
   MPI_Comm comm = MPI_COMM_NULL;
+  MPI_Comm node = MPI_COMM_NULL;  // The ranks of this node. RankScope frees it.
   int rank = 0, size = 1, local_rank = 0;
   MPI_Datatype d4 = MPI_DATATYPE_NULL;  // 4 contiguous doubles: one d4 of kernels.cuh.
 };
@@ -58,10 +60,8 @@ State& state() {
   H4_MPI(MPI_Comm_set_errhandler(s.comm, MPI_ERRORS_RETURN));
   H4_MPI(MPI_Comm_rank(s.comm, &s.rank));
   H4_MPI(MPI_Comm_size(s.comm, &s.size));
-  MPI_Comm node = MPI_COMM_NULL;
-  H4_MPI(MPI_Comm_split_type(s.comm, MPI_COMM_TYPE_SHARED, s.rank, MPI_INFO_NULL, &node));
-  H4_MPI(MPI_Comm_rank(node, &s.local_rank));
-  H4_MPI(MPI_Comm_free(&node));
+  H4_MPI(MPI_Comm_split_type(s.comm, MPI_COMM_TYPE_SHARED, s.rank, MPI_INFO_NULL, &s.node));
+  H4_MPI(MPI_Comm_rank(s.node, &s.local_rank));
   H4_MPI(MPI_Type_contiguous(4, MPI_DOUBLE, &s.d4));
   H4_MPI(MPI_Type_commit(&s.d4));
   s.made = true;
@@ -69,6 +69,35 @@ State& state() {
 }
 
 MPI_Comm cm() { return state().comm; }
+
+// Warns once per process when several ranks of a node use one GPU. Collective on the node: all ranks of the job
+// call it. The GPU of a rank is identified by its PCI address (device 0 of the rank). -1: the query failed.
+void warn_shared_gpus() {
+  static bool done = false;  // select_device runs twice on each rank (rank_table and the Simulation constructor).
+  if (done) return;
+  done = true;
+  const MPI_Comm node = state().node;
+  int ranks_here = 1;
+  H4_MPI(MPI_Comm_size(node, &ranks_here));
+  const int lr = state().local_rank;
+  cudaDeviceProp prop{};
+  const cudaError_t e = cudaGetDeviceProperties(&prop, 0);
+  cudaGetLastError();  // Clear the error. The Simulation constructor must not see it.
+  const int key = e == cudaSuccess ? ((prop.pciDomainID * 256 + prop.pciBusID) * 256 + prop.pciDeviceID) : -1;
+  std::vector<int> keys(static_cast<size_t>(ranks_here));
+  H4_MPI(MPI_Allgather(&key, 1, MPI_INT, keys.data(), 1, MPI_INT, node));
+  std::sort(keys.begin(), keys.end());
+  const int gpus = int(std::unique(keys.begin(), keys.end()) - keys.begin());
+  if (lr == 0 && keys[0] != -1 && gpus < ranks_here) {
+    char host[256] = "unknown";
+    if (gethostname(host, sizeof host) != 0) std::snprintf(host, sizeof host, "unknown");
+    host[sizeof host - 1] = '\0';
+    std::fprintf(stderr,
+                 "warning: node %s: %d ranks share %d GPU(s). The ranks compete for each GPU. Start at most one rank "
+                 "for each GPU.\n",
+                 host, ranks_here, gpus);
+  }
+}
 
 }  // namespace
 
@@ -85,7 +114,10 @@ int select_device(int device_offset) {
     throw std::runtime_error(std::string("no CUDA device for rank ") + std::to_string(rank()) + ": " +
                              (e != cudaSuccess ? cudaGetErrorString(e) : "device count is 0"));
   }
-  if (count == 1) return 0;  // The launcher gives one GPU to each task (for example srun --gpu-bind=single:1).
+  if (count == 1) {  // The launcher gives one GPU to each task (for example srun --gpu-bind=single:1).
+    if (active()) warn_shared_gpus();  // Node-local collective: all ranks of this node take this branch.
+    return 0;
+  }
   const int lr = local_rank();
   if (lr >= count)
     throw std::runtime_error("rank " + std::to_string(rank()) + ": local rank " + std::to_string(lr) +
@@ -179,6 +211,7 @@ RankScope::~RankScope() {
   comm::State& s = comm::g_state;
   if (s.made) {
     MPI_Type_free(&s.d4);
+    MPI_Comm_free(&s.node);
     MPI_Comm_free(&s.comm);
     s = comm::State{};
   }
@@ -203,7 +236,8 @@ std::string rank_table(int device_offset) {
     const cudaError_t e = cudaGetDeviceProperties(&prop, id);
     line += " device=" + std::to_string(id);
     if (e == cudaSuccess)
-      line += std::string(" name=") + prop.name + " cc=" + std::to_string(prop.major) + "." + std::to_string(prop.minor);
+      line += std::string(" name=") + prop.name + " cc=" + std::to_string(prop.major) + "." + std::to_string(prop.minor) +
+              " sm_count=" + std::to_string(prop.multiProcessorCount);
     else
       line += std::string(" error=") + cudaGetErrorString(e);
   } catch (const std::exception& ex) {

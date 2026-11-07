@@ -107,6 +107,10 @@ cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_CUDA_ARCHITECTURES="89;90
 cmake --build build -j
 ```
 
+On a login node without a GPU, `native` fails. Set both architectures there: `-DCMAKE_CUDA_ARCHITECTURES="89;90"`.
+
+Install with `cmake --install build --prefix <dir>`. The install has the library, the header, the tools and the configs. Another CMake project finds it with `find_package(h4nb)` and links `h4nb::h4nb`.
+
 ✅ MPI build (T029): add `-DH4NB_MPI=ON`. CMake then needs an MPI library (`find_package(MPI)`), for example `openmpi-bin` and `libopenmpi-dev`. Without this option the build has no MPI dependency, and the results are the same bits as before.
 
 ✅ Spack: the repository has a Spack recipe and two Spack environments (RTX 4070 Ti, GH200 with MPI). See [`docs/spack.md`](docs/spack.md).

@@ -25,6 +25,7 @@
 #include <string>
 #include <vector>
 #include "disk.hpp"
+#include "energy_norm.hpp"
 #include "h4nb/h4nb.hpp"
 #include "run_info.hpp"
 #include "input.hpp"
@@ -158,6 +159,8 @@ static void declare(Settings& s) {
   s.add("snap", T::Real, "0", "Snapshot interval, a multiple of diag. 0 and no snap_times: only the final snapshot.", Range::ge(0));
   s.add("snap_times", T::RealList, "", "Explicit snapshot times, multiples of diag. Do not set it with snap.", Range::ge(0));
   s.add("energy_tol", T::Real, "1e-8", "Threshold for the energy verdict. It does not change the integration.", Range::gt(0));
+  s.add("energy_norm", T::Enum, "e0", "Relative energy error. e0: divide by |E0|. ku: divide by |K0|+|U0|.",
+        Range::one_of({"e0", "ku"}));
   s.add("perf", T::Bool, "1", "Write performance.dat.");
 }
 
@@ -406,7 +409,7 @@ static int run(int argc, char** argv) {
       fp = perf ? std::fopen((out + "/performance.dat.tmp").c_str(), "w") : nullptr;
       fv = std::fopen((out + "/energy_periods.dat.tmp").c_str(), "w");
       if (!fe || !fm || !ft || !fv || (perf && !fp)) throw std::runtime_error("cannot write into " + out);
-      // rel_err = |E - E0 - W_diss| / |E0|. W_diss is the work of the dissipative force since t = 0 (0 with dissipation=off).
+      // rel_err = |E - E0 - W_diss| / D, D = |E0| (energy_norm=e0) or |K0| + |U0| (ku). W_diss is the work of the dissipative force since t = 0 (0 with dissipation=off).
       std::fprintf(fe, "# time K U E rel_err max_rel_err mean_rel_err W_diss\n");
       std::fprintf(fm, "# time Px Py Pz Lx Ly Lz dP_rel dL_rel  (changes divided by sum m|v| and sum m|r x v| of the initial state, TZ 7.3)\n");
       std::fprintf(ft, "# time dt_min dt_max dt_mean mean_active_per_block_step r_min\n");
@@ -491,6 +494,12 @@ static int run(int argc, char** argv) {
                   c.drag_tau, c.drag_vbg[0], c.drag_vbg[1], c.drag_vbg[2]);
   if (root) std::printf("%s\n", dissipation_text);
   const h4nb::Diagnostics d0 = sim.diagnostics();
+  const std::string energy_norm = s.str("energy_norm");
+  if (const std::string msg = energy_norm_error(energy_norm, d0.E); !msg.empty()) {
+    close_all();
+    if (root) std::fprintf(stderr, "h4nb_run: error: %s\n", msg.c_str());
+    return 2;
+  }
   bool close_warned = false;
   double max_err = 0, err_sum = 0;
   bool nonfinite_err = false;  // A relative error is not finite. The run then fails with exit code 3 (review D8).
@@ -506,7 +515,7 @@ static int run(int argc, char** argv) {
   if (!(p_scale > 0)) p_scale = 1;
   if (!(l_scale > 0)) l_scale = 1;
   auto write_diag = [&](const h4nb::Diagnostics& d) {
-    const double err = std::fabs((d.E - d0.E - d.W_diss) / d0.E);
+    const double err = rel_energy_error(d.E, d0.E, d.W_diss, d0.K, d0.U, energy_norm);
     if (!std::isfinite(err)) nonfinite_err = true;
     max_err = max_keep_nan(max_err, err);
     err_sum += err;

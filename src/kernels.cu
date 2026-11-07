@@ -22,7 +22,7 @@ __global__ void gather_kernel(int na, const int* __restrict__ act, const d4* __r
 }
 
 template <int TILE>
-__global__ void force_kernel(int na, const d4* __restrict__ tx, const d4* __restrict__ tv,
+__global__ void __launch_bounds__(TILE) force_kernel(int na, const d4* __restrict__ tx, const d4* __restrict__ tv,
                              const int* __restrict__ tid, int ns, const d4* __restrict__ sx,
                              const d4* __restrict__ sv, int sbase, int chunk, double eps2, d4* __restrict__ pa,
                              d4* __restrict__ pj) {
@@ -121,7 +121,7 @@ template __global__ void correct_kernel<Dissipation::LinearDrag>(H4_CORRECT_ARGS
 #undef H4_CORRECT_ARGS
 
 template <int TILE>
-__global__ void potential_kernel(int n, const d4* __restrict__ xall, int ns, int sbase, int chunk, double eps2,
+__global__ void __launch_bounds__(TILE) potential_kernel(int n, const d4* __restrict__ xall, int ns, int sbase, int chunk, double eps2,
                                  double* __restrict__ pphi) {
   __shared__ d4 shx[TILE];
   const int i = blockIdx.x * TILE + threadIdx.x;

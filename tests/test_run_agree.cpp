@@ -110,6 +110,18 @@ int main() {
   const std::string verdict = tracker.verdict(1e-8, "test", 0, 1.0);
   CHECK(verdict.rfind("energy verdict: FAIL", 0) == 0);
 
+  // The relative energy error: e0 divides by |E0|, ku by |K0| + |U0| (energy_norm). W is the dissipated work.
+  CHECK(std::fabs(rel_energy_error(1.1, 1.0, 0.05, 1.0, -3.0, "e0") - 0.05) < 1e-12);
+  CHECK(std::fabs(rel_energy_error(1.1, 1.0, 0.05, 1.0, -3.0, "ku") - 0.0125) < 1e-12);
+  // E0 = 0: e0 gives an infinite error, and ku gives a finite error.
+  CHECK(!std::isfinite(rel_energy_error(2.0, 0.0, 0.0, 1.0, -3.0, "e0")));
+  CHECK(std::fabs(rel_energy_error(2.0, 0.0, 0.0, 1.0, -3.0, "ku") - 0.5) < 1e-12);
+  // The input error for e0 with E0 = 0 names energy_norm=ku. ku has no such error.
+  CHECK(energy_norm_error("e0", 0.0).find("energy_norm=ku") != std::string::npos);
+  CHECK(energy_norm_error("e0", NAN).find("not finite") != std::string::npos);
+  CHECK(energy_norm_error("e0", -2.0).empty());
+  CHECK(energy_norm_error("ku", 0.0).empty());
+
   std::remove(ic);
   if (failures) {
     std::fprintf(stderr, "test_run_agree: %d failure(s)\n", failures);

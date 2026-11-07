@@ -1,4 +1,5 @@
 # Compile check only. A runner without a GPU shows that the code builds, not that it is correct (constitution).
+# -Wall -Wextra: the host code has no warnings with these flags (checked with the container build).
 name: build
 on: [push, pull_request]
 jobs:
@@ -8,23 +9,33 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: apt-get update -qq && apt-get install -y -qq cmake make g++
-      - run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_CUDA_ARCHITECTURES=80
+      - run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_CUDA_ARCHITECTURES="80;89;90" -DCMAKE_CXX_FLAGS="-Wall -Wextra"
       - run: cmake --build build -j"$(nproc)"
       - name: CPU tests (no GPU needed)
         run: ctest --test-dir build -L cpu --output-on-failure
       - name: CPU-only smoke test
         run: build/h4nb_mkdisk n=1000 frac=0.5 out=/tmp/disk.txt
-  # Task T036. Compile check of the MPI path only (H4NB_MPI=ON). No GPU and no mpirun run here.
-  # The cpu tests do not use MPI. They run to show that the MPI build does not change them.
+  # Task T036 and MPI-M9. Compile check of the MPI path (H4NB_MPI=ON). No GPU here, so no GPU run.
+  # The cpu tests run with the MPI build. The smoke step runs two ranks with mpirun and no GPU.
   build-mpi:
     runs-on: ubuntu-latest
     container: nvidia/cuda:12.6.2-devel-ubuntu24.04
     env:
       DEBIAN_FRONTEND: noninteractive
+      OMPI_ALLOW_RUN_AS_ROOT: "1"
+      OMPI_ALLOW_RUN_AS_ROOT_CONFIRM: "1"
     steps:
       - uses: actions/checkout@v4
       - run: apt-get update -qq && apt-get install -y -qq cmake make g++ openmpi-bin libopenmpi-dev
-      - run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_CUDA_ARCHITECTURES=80 -DH4NB_MPI=ON
+      - run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_CUDA_ARCHITECTURES="80;90" -DH4NB_MPI=ON -DCMAKE_CXX_FLAGS="-Wall -Wextra"
       - run: cmake --build build -j"$(nproc)"
       - name: CPU tests (no GPU needed)
         run: ctest --test-dir build -L cpu --output-on-failure
+      - name: MPI smoke test (two ranks, no GPU, must stop with exit 1 and the no-GPU message)
+        run: |
+          build/h4nb_mkdisk n=1000 frac=0.5 out=/tmp/disk.txt
+          rc=0
+          timeout 60 mpirun --oversubscribe -np 2 build/h4nb_run ic=/tmp/disk.txt out=/tmp/mpi_run t_end=0.0625 mpi_host_staging=1 >/tmp/mpi.out 2>&1 || rc=$?
+          cat /tmp/mpi.out
+          test "$rc" -eq 1
+          grep -q "no CUDA device for rank" /tmp/mpi.out
