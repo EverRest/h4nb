@@ -30,12 +30,15 @@ description: "Task list for h4nb-viz: local web app for the visualization of run
 
 ## Phase 1: Setup
 
-- [ ] T001 **[Q1]** Create `tools/h4nb-viz/pyproject.toml`. Set the name `h4nb-viz` and Python ≥ 3.10. Add the dependency `numpy>=1.24`. Add the extra `dev = ["pytest"]`. Add the entry point `h4nb-viz = h4nb_viz.__main__:main`. Create the empty package layout of plan.md Project Structure.
-- [ ] T002 [P] Vendor `three.js` r160 (`three.module.min.js`) and `uPlot` 1.6.30 (`uPlot.esm.js`, `uPlot.min.css`) into `tools/h4nb-viz/web/vendor/`. Add their LICENSE files. Add a `VERSIONS.txt`. `VERSIONS.txt` lists the version, the source URL and the sha256 of each file.
-- [ ] T003 [P] Copy `tools/h4nb-metrics/src/h4nb_metrics/readers.py` to `tools/h4nb-viz/src/h4nb_viz/readers.py`.
+- [x] T001 **[Q1]** Create `tools/h4nb-viz/pyproject.toml`. Set the name `h4nb-viz` and Python ≥ 3.10. Add the dependency `numpy>=1.24`. Add the extra `dev = ["pytest"]`. Add the entry point `h4nb-viz = h4nb_viz.__main__:main`. Create the empty package layout of plan.md Project Structure.
+  - Evidence: `tools/h4nb-viz/pyproject.toml` exists. `pip install -e tools/h4nb-viz[dev]` works on Python 3.13.3. Modules of later tasks (T010 and up) are not created yet.
+- [x] T002 [P] Vendor `three.js` r160 (`three.module.min.js`) and `uPlot` 1.6.30 (`uPlot.esm.js`, `uPlot.min.css`) into `tools/h4nb-viz/web/vendor/`. Add their LICENSE files. Add a `VERSIONS.txt`. `VERSIONS.txt` lists the version, the source URL and the sha256 of each file.
+  - Evidence: the files are in `tools/h4nb-viz/web/vendor/`, with `LICENSE-three.txt`, `LICENSE-uPlot.txt` and `VERSIONS.txt`. The header of `three.module.min.js` gives `160`. The SHA-256 sums are in `VERSIONS.txt`.
+- [x] T003 [P] Copy `tools/h4nb-metrics/src/h4nb_metrics/readers.py` to `tools/h4nb-viz/src/h4nb_viz/readers.py`.
   - Add a header comment with the source commit.
   - If specs/002 is not on `main` yet, write the same functions from `specs/001-hermite-nbody-lib/contracts/file-formats.md`.
   - These functions are `parse_config_used`, `parse_run_info`, `parse_header`, `parse_row` and `snapshot_header`.
+  - Evidence: `src/h4nb_viz/readers.py` has the five functions. The header gives commit 7d0d42c. Specs/002 is not on `main`, so the header says the copy is kept to these five functions.
 
 ---
 
@@ -43,7 +46,7 @@ description: "Task list for h4nb-viz: local web app for the visualization of run
 
 **⚠️ CRITICAL**: Finish this phase before you start the user-story phases.
 
-- [ ] T004 Write `src/h4nb_viz/fake.py` and the CLI `h4nb-viz fake OUT_DIR [--n 20000] [--snaps 60] [--t-end 6.3125]`.
+- [x] T004 Write `src/h4nb_viz/fake.py` and the CLI `h4nb-viz fake OUT_DIR [--n 20000] [--snaps 60] [--t-end 6.3125]`.
   - Create a Kepler disk around a central body (m = 1).
   - Use small random e and inc.
   - Advance each snapshot with the Keplerian motion.
@@ -51,20 +54,26 @@ description: "Task list for h4nb-viz: local web app for the visualization of run
   - Also write `energy.dat`, `momentum.dat`, `timesteps.dat`, `performance.dat`, `energy_periods.dat`, `config.used` and `run_info.txt`.
   - Use plausible values. The energy error follows a random walk near 1e-10.
   - If the specs/002 generator writes snapshots, reuse its table writer.
-- [ ] T005 Write `src/h4nb_viz/snapshots.py`. Write the v1 reader with `numpy.memmap`. Read one array at a time. Check the file size. Skip a file that is still being written. Build the decimation subset of plan.md DD3 and research.md R3. Cache the subset per run. The central body comes first.
-- [ ] T006 [P] Write `src/h4nb_viz/tables.py`. Read a `.dat` table into `numpy` columns by header name. Read `.dat.tmp` when `.dat` is missing. Ignore a truncated last line. Use the name table of contracts/http-api.md.
-- [ ] T007 Write `src/h4nb_viz/runs.py`. Find the runs under the root. A run is a directory with `config.used`, a snapshot or `energy.dat[.tmp]`. Give each run its name. Set the `state` by the rules of contracts/http-api.md. Rescan at most every 5 s.
-- [ ] T008 Write `src/h4nb_viz/server.py` and the CLI `h4nb-viz serve ROOT [--port 8820] [--export-dir] [--no-browser]`.
+  - Evidence: `h4nb-viz fake` wrote 61 snapshots, 5 tables, `config.used` and `run_info.txt` for n = 20 000 in 4.3 s (75 MB). The energy column stays constant per run. `tests/test_fake.py` and `tests/test_cli.py` pass. The writer is not reused from specs/002, because DD6 forbids importing `h4nb_metrics`.
+- [x] T005 Write `src/h4nb_viz/snapshots.py`. Write the v1 reader with `numpy.memmap`. Read one array at a time. Check the file size. Skip a file that is still being written. Build the decimation subset of plan.md DD3 and research.md R3. Cache the subset per run. The central body comes first.
+  - Evidence: `tests/test_snapshots.py` passes. It checks the round trip, a partial read, a partial file and the subset (same over frames, central body first).
+- [x] T006 [P] Write `src/h4nb_viz/tables.py`. Read a `.dat` table into `numpy` columns by header name. Read `.dat.tmp` when `.dat` is missing. Ignore a truncated last line. Use the name table of contracts/http-api.md.
+  - Evidence: `tests/test_tables.py` passes. It checks the header names, a truncated line, a short row and the `.tmp` fallback.
+- [x] T007 Write `src/h4nb_viz/runs.py`. Find the runs under the root. A run is a directory with `config.used`, a snapshot or `energy.dat[.tmp]`. Give each run its name. Set the `state` by the rules of contracts/http-api.md. Rescan at most every 5 s.
+  - Evidence: `tests/test_runs.py` passes. It checks the five states, the `stale_after` rule and the rescan limit.
+- [x] T008 Write `src/h4nb_viz/server.py` and the CLI `h4nb-viz serve ROOT [--port 8820] [--export-dir] [--no-browser]`.
   - Use `http.server.ThreadingHTTPServer` on `127.0.0.1`.
   - Serve these endpoints: `/`, `/web/...`, `/api/status`, `/api/runs`, `/api/runs/{run}`, `/ids`, `/frames/{index}`.
   - Serve `/series` with `source=files`.
   - See contracts/http-api.md and frame-format.md section 1.
   - Open the browser.
   - Do not open the browser when the user gives `--no-browser`.
-- [ ] T009 [P] Write the tests.
+  - Evidence: `curl` checks on `h4nb-viz serve` gave the expected status codes and bytes for each endpoint. `tests/test_server.py` and `tests/test_cli.py` pass. The browser flag is tested through `main`.
+- [x] T009 [P] Write the tests.
   - Write `tests/test_snapshots.py`. Test the round trip with the fake run and the partial read. Test that the subset stays the same over frames and contains the central body.
   - Write `tests/test_tables.py` for the header names, a truncated line and the `.tmp` fallback.
   - Write `tests/test_server.py` for a start on a free port, each MVP endpoint, the frame header bytes and the 404 for an unknown run.
+  - Evidence: `pytest` in `tools/h4nb-viz`: 61 passed on Python 3.10.21 and on Python 3.13.3.
 
 ---
 
