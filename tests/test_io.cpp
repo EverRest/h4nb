@@ -183,6 +183,48 @@ static void test_text_loader_fractional_id() {
   fs::remove(path);
 }
 
+// True when load_text throws std::runtime_error for this text. Any other exception counts as a failure.
+static bool load_text_throws(const std::string& text, const char* must_contain = nullptr) {
+  const std::string path = tmp_path("h4nb_test_text_err.txt");
+  write_file(path, text);
+  bool threw = false;
+  try {
+    h4nb::load_text(path);
+  } catch (const std::runtime_error& e) {
+    threw = !must_contain || std::string(e.what()).find(must_contain) != std::string::npos;
+  } catch (...) {
+  }
+  fs::remove(path);
+  return threw;
+}
+
+// A header with n = 2^40 and no body: the size check rejects it before any allocation.
+static void test_snapshot_n_2_40() {
+  const std::string path = tmp_path("h4nb_test_n40.bin");
+  write_raw_snapshot(path, uint64_t(1) << 40, 0);
+  CHECK(read_snapshot_throws(path));
+  fs::remove(path);
+}
+
+// A line with 7 tokens is an error: the 8 fields are required.
+static void test_text_loader_seven_tokens() {
+  CHECK(load_text_throws("0 1 0 0 0 0 0\n1 1 0 0 0 0 0 0\n", ":1:"));
+}
+
+// The same ID on two lines is an error. Exit code 2 of the tools is tested in exit_codes.sh.
+static void test_text_loader_repeated_id() {
+  CHECK(load_text_throws("0 1 0 0 0 0 0 0\n0 1 1 0 0 0 0 0\n", "repeated ID"));
+}
+
+// Two particles at one point are not a load error. The force law, not the loader, decides what happens.
+static void test_text_loader_coincident() {
+  const std::string path = tmp_path("h4nb_test_coinc.txt");
+  write_file(path, "0 1 1 2 3 0 0 0\n1 0.5 1 2 3 0 0 1\n");
+  const h4nb::Particles p = h4nb::load_text(path);
+  CHECK(p.size() == 2 && p.x[0] == p.x[1] && p.y[0] == p.y[1] && p.z[0] == p.z[1]);
+  fs::remove(path);
+}
+
 int main() {
   test_text_loader();
   test_text_loader_bad_line();
@@ -192,6 +234,10 @@ int main() {
   test_snapshot_trailing_bytes();
   test_snapshot_huge_n();
   test_text_loader_fractional_id();
+  test_snapshot_n_2_40();
+  test_text_loader_seven_tokens();
+  test_text_loader_repeated_id();
+  test_text_loader_coincident();
   std::puts("test_io: OK");
   return 0;
 }
