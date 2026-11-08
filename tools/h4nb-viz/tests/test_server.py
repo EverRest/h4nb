@@ -1,3 +1,4 @@
+import http.client
 import json
 import math
 import os
@@ -402,3 +403,14 @@ def test_index_page_carries_the_token_and_needs_none(server):
 def test_static_files_need_no_token(server):
     base, _ = server
     assert get(base, "/web/app.js", token="")[0] == 200
+
+
+def test_percent_encoded_api_path_needs_the_token(server):
+    """The token check and the router must see the same path. %61 is "a"."""
+    base, httpd = server
+    conn = http.client.HTTPConnection("127.0.0.1", httpd.server_address[1], timeout=5)
+    conn.request("GET", "/%61pi/status", headers={"Host": "127.0.0.1:%d" % httpd.server_address[1]})
+    response = conn.getresponse()
+    response.read()
+    conn.close()
+    assert response.status == 403

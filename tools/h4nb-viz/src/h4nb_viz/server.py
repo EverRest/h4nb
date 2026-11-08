@@ -245,8 +245,10 @@ class Handler(BaseHTTPRequestHandler):
             raise ApiError(403, "the Host header is not allowed")
 
     def _check_token(self):
-        """Require the token of this server for every /api/ request."""
-        if not urllib.parse.urlsplit(self.path).path.startswith("/api/"):
+        """Require the token of this server for every request except the page and the static files.
+        The path is decoded the same way as in _route, so an encoded path cannot skip the check."""
+        path = urllib.parse.unquote(urllib.parse.urlsplit(self.path).path)
+        if path == "/" or path.startswith("/web/"):
             return
         given = self.headers.get("X-H4NB-Token", "")
         if not hmac.compare_digest(given.encode("utf-8"), self.server.app.token.encode("utf-8")):
