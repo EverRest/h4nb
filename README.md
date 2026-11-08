@@ -214,7 +214,7 @@ These rules apply to the library and to all tools. The API does not check them i
 - `advance_to(t)` requires `t` to be at or after `time()`. It throws `std::invalid_argument` otherwise.
 - `eta` is the Aarseth accuracy parameter. It sets the step of each particle. A smaller `eta` gives smaller steps and more cost.
 - `eta_init` sets the accuracy parameter for the first step only, at t = 0. Set `eta_init = 0` to use `eta`.
-- A particle with no force at t = 0 gets level 0. Its step is `dt_max`.
+- A particle with no force and no jerk at t = 0 (`a = j = 0`) gets level 0. Its step is `dt_max`. A nonzero snap does not set `kDtUnderflow`.
 - `kClosePair` is a status bit. It is set when a pair has r² < `r2_close`. `r2_close = 0` turns the check off.
 - Check `status()` to find close encounters after `advance_to()`.
 - Level k has the step `dt_max / 2^k`. Level 0 has the step `dt_max`. The largest level is `max_level`.

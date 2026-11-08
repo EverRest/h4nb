@@ -31,7 +31,7 @@ ID prefixes: A = accuracy and physics, D = data and IO, P = performance, Q = gen
 | P1 | HIGH | src/kernels.cu:24-60 | Idle threads and warps run the full pair loop when NA < TILE |
 | O1 | HIGH | include/h4nb/h4nb.hpp:54 | No per-step or per-phase metrics |
 | A3 | MEDIUM | src/hermite.cuh:62, 92-101 | NaN step estimate becomes a large step |
-| A5 | MEDIUM | src/hermite.cuh:136 | Zero acceleration gives a false kDtUnderflow |
+| A5 | MEDIUM | src/hermite.cuh:136 | ~~Zero acceleration gives a false kDtUnderflow~~ **Closed 2026-11-08** |
 | A6 | MEDIUM | src/simulation.cu:37-41 | Bit-identical results also depend on the SM count |
 | A7 | MEDIUM | tests/test_gpu_vs_ref.cu:122 | GPU-vs-ref test needs exact level match (PLAUSIBLE) |
 | A8 | MEDIUM | tests/ | Gaps in accuracy tests |
@@ -56,7 +56,7 @@ ID prefixes: A = accuracy and physics, D = data and IO, P = performance, Q = gen
 | P7-P11 | LOW | various | See section |
 | Q8-Q12 | LOW | various | See section |
 | O2-O8 | design | various | Observability design steps |
-| O9 | MEDIUM | tools/run_info.hpp:15-46 | Run environment missing in run_info.txt (addendum) |
+| O9 | MEDIUM | tools/run_info.hpp:15-46 | ~~Run environment missing in run_info.txt~~ **Closed 2026-11-08** |
 | Q13 | LOW | tests/test_diagnostics.cu:19 | Real two-GPU path not in the diagnostics test (addendum) |
 
 ---
@@ -145,6 +145,7 @@ ID prefixes: A = accuracy and physics, D = data and IO, P = performance, Q = gen
 - Location: `src/hermite.cuh:136`
 - Problem: a body exactly at the centre of a symmetric start: `eta_init * 0 / |j| = 0`. It starts at `max_level` and `kDtUnderflow` is set, but nothing is wrong.
 - Fix: same guard as A1.
+- **Closed 2026-11-08:** `init_level()` treats `a = j = 0` like A1 (coarsest level, no bit), even when snap or crackle is nonzero.
 
 ## A6. Bit-identical results also depend on the SM count
 
@@ -408,6 +409,7 @@ Measured on CPU with g++ -O2: `load_text` for N = 1e6 takes 1.6 s; `write_snapsh
 - Location: `tools/run_info.hpp:15-46`
 - Problem: run_info.txt has device name and cc, but not: `CUDA_VISIBLE_DEVICES`, GPU UUID and PCI bus id, total memory, SM count (see A6), clocks and application clocks, persistence mode, ECC, power limit, P2P capability between the listed devices, `CUDA_MODULE_LOADING`. Two runs on "device 0" can be different physical GPUs.
 - Fix: add these keys from `cudaGetDeviceProperties` (uuid, pciBusID, totalGlobalMem, multiProcessorCount, clockRate), `getenv`, and `cudaDeviceCanAccessPeer`. Clocks, persistence and ECC need NVML (optional, `#ifdef`), or keep them in `h4nb_pack.sh`, which already stores nvidia-smi output.
+- **Closed 2026-11-08:** `cuda_visible_devices`, `cuda_module_loading`, per-device `uuid`/`pci`/`mem_bytes`/`clock_khz`, and `p2p_i_j` lines. NVML fields stay in `h4nb_pack.sh`.
 
 ### Q13. Real two-GPU path not covered by the diagnostics test
 

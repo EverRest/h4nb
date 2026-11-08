@@ -6,7 +6,7 @@
   1. No run_id, no config or input hash, no schema version or units in the .dat headers. Runs of 1/2/4/8 ranks differ only by folder name.
   2. No end record: run_info.txt has `start_utc` only (no `end_utc`, `exit_code`, `total_wall_s`). A failed run (ran: no GPU, exit 1) leaves header-only .dat files and an empty `energy_periods.dat` that look like a valid empty run.
   3. ~~At `-np 1` in an MPI build, the 1-rank point runs the one-process path, not `step_mpi()`.~~ **Partly closed 2026-11-08:** `step_mpi()` is gone; one `step()` holds both exchange paths. At `-np 1`, `mpi` is still false, so the peer-copy branch runs (same as a non-MPI build). `rank_table` empty / no `mpi_library` at `-np 1` is still open.
-  4. Rank lines have no GPU `uuid`/`pci`, no `CUDA_VISIBLE_DEVICES`, no CPU affinity or NUMA. Silent GPU sharing (MPI-M5) cannot be seen.
+  4. ~~Rank lines have no GPU `uuid`/`pci`, no `CUDA_VISIBLE_DEVICES`, no CPU affinity or NUMA.~~ **Partly closed 2026-11-08 (O9):** rank lines and single-process `device_*` lines have `uuid`, `pci`, `mem_bytes`, `clock_khz`. `run_info.txt` has `cuda_visible_devices`. Still open: per-rank `cvd=`, CPU affinity, NUMA.
   5. No MPI environment: `OMPI_MCA_*`, `UCX_*`, `MPICH_*`, `FI_*`, `SLURM_*`. No `mpi_cuda_aware`, `mpi_host_staging`, `device_offset` in run_info (only in config.used).
   6. `build_info()` says only `mpi: on`, not the MPI header version used at compile time. A runtime libmpi from another module cannot be detected.
   7. `h4nb_pack.sh` collects `nvidia-smi` of the packing host only. Not collected: `nvidia-smi topo -m`, `ompi_info --parsable` (`mpi_built_with_cuda_support`), `ucx_info -v`, `module list`, `lscpu`/`numactl -H`, per-node GPU lists, the mpirun stdout.

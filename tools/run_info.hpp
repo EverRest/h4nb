@@ -12,22 +12,26 @@
 #include <stdexcept>
 #include <string>
 #include <vector>
+#include "device_info.hpp"
 #include "h4nb/h4nb.hpp"
 
 inline void write_run_info(const std::string& path, const std::string& tool, const std::vector<int>& devices, int argc,
                            char** argv, const std::string& rank_lines = "") {
   std::string s = "tool: " + tool + "\n" + h4nb::build_info();
+  // Issue O9: env that can remap "device 0" to a different physical GPU.
+  s += "cuda_visible_devices: " + h4nb::device_info::env_or_empty("CUDA_VISIBLE_DEVICES") + "\n";
+  s += "cuda_module_loading: " + h4nb::device_info::env_or_empty("CUDA_MODULE_LOADING") + "\n";
   const int nranks = h4nb::ranks();
   for (size_t k = 0; nranks == 1 && k < devices.size(); ++k) {
     const std::string key = "device_" + std::to_string(k) + ": ";
     cudaDeviceProp prop{};
     const cudaError_t e = cudaGetDeviceProperties(&prop, devices[k]);
     if (e == cudaSuccess)
-      s += key + "id=" + std::to_string(devices[k]) + " name=" + prop.name + " cc=" + std::to_string(prop.major) + "." +
-           std::to_string(prop.minor) + " sm_count=" + std::to_string(prop.multiProcessorCount) + "\n";
+      s += key + "id=" + std::to_string(devices[k]) + h4nb::device_info::prop_fields(prop) + "\n";
     else
       s += key + "id=" + std::to_string(devices[k]) + " error=" + cudaGetErrorString(e) + "\n";
   }
+  if (nranks == 1) s += h4nb::device_info::p2p_block(devices);
   cudaGetLastError();  // Clear the error. The Simulation constructor must not see it.
   s += "ranks: " + std::to_string(nranks) + "\n";
   s += rank_lines;  // Several ranks: "mpi_library: ..." and one "rank_<r>: host=... device=..." line for each rank.

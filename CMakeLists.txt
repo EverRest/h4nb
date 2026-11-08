@@ -67,8 +67,8 @@ target_include_directories(h4nb
 
 foreach(tool h4nb_run h4nb_mkdisk h4nb_bench h4nb_order h4nb_study)
   add_executable(${tool} tools/${tool}.cpp)
-  # run_info.hpp includes cuda_runtime.h.
-  target_include_directories(${tool} PRIVATE tools)
+  # run_info.hpp includes cuda_runtime.h and src/device_info.hpp (issue O9).
+  target_include_directories(${tool} PRIVATE tools src)
   target_link_libraries(${tool} PRIVATE h4nb CUDA::cudart)
 endforeach()
 
@@ -110,6 +110,7 @@ h4nb_add_test(test_io_atomic tests/test_io_atomic.cpp cpu)
 set_tests_properties(test_io_atomic PROPERTIES SKIP_RETURN_CODE 77)
 h4nb_add_test(test_input tests/test_input.cpp cpu)
 h4nb_add_test(test_settings tests/test_settings.cpp cpu)
+h4nb_add_test(test_device_info tests/test_device_info.cpp cpu)
 # h4nb_pack.sh test. Exit 77 when a tool is missing (for example GNU find on macOS).
 add_test(NAME test_pack COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_pack.sh ${CMAKE_CURRENT_SOURCE_DIR}/tools/h4nb_pack.sh)
 set_tests_properties(test_pack PROPERTIES LABELS cpu SKIP_RETURN_CODE 77)
