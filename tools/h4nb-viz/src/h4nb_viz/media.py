@@ -28,7 +28,7 @@ def to_mp4(src, dst):
     exe = find_ffmpeg()
     if exe is None:
         raise FfmpegError("ffmpeg is not installed. Install ffmpeg to export MP4.")
-    cmd = [exe, "-y", "-i", str(src), "-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "18", str(dst)]
+    cmd = [exe, "-y", "-loglevel", "error", "-i", str(src), "-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "18", str(dst)]
     proc = subprocess.run(cmd, stdin=subprocess.DEVNULL, capture_output=True, text=True)
     if proc.returncode != 0:
         raise FfmpegError(f"ffmpeg failed with exit code {proc.returncode}: {proc.stderr.strip()}")

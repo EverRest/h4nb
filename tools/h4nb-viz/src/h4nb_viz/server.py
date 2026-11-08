@@ -13,7 +13,6 @@ from collections import Counter
 import os
 import re
 import secrets
-import shutil
 import time
 import traceback
 import urllib.parse
@@ -23,7 +22,7 @@ from typing import Callable, Dict, List, Optional, Tuple
 
 import numpy as np
 
-from . import __version__
+from . import __version__, media
 from .prometheus import NAMES, Prometheus, PromError, utc_epoch
 from .runs import RESCAN_SECONDS, RunIndex, central_id_of, detail, newest_change, start_utc_of, summarize, t_end_of
 from .snapshots import (FIELD_MASS, FIELD_POS, FIELD_VEL, Snapshot, SubsetCache, encode_frame, encode_ids,
@@ -63,6 +62,16 @@ def progress_ratio(run_dir: str) -> Optional[dict]:
     return {"x": data["x"], "x_name": "time", "y": data["y"] / t_end, "metric": "energy.dat:time / t_end"}
 
 
+def save_export_path(export_dir: str, base: str) -> str:
+    """Return a free path in the export directory. Add a number when the name is taken."""
+    stem, ext = os.path.splitext(base)
+    path, number = os.path.join(export_dir, base), 1
+    while os.path.exists(path):
+        path = os.path.join(export_dir, "%s-%d%s" % (stem, number, ext))
+        number += 1
+    return path
+
+
 def save_export(export_dir: str, name: str, data: bytes) -> str:
     """Write one export file. Keep only the base name, and add a number when the name is taken."""
     base = os.path.basename(name.replace("\\", "/"))
@@ -70,10 +79,7 @@ def save_export(export_dir: str, name: str, data: bytes) -> str:
     if not stem or ext.lower() not in EXPORT_EXTENSIONS:
         raise ApiError(400, "name must end with one of %s" % ", ".join(EXPORT_EXTENSIONS))
     os.makedirs(export_dir, exist_ok=True)
-    path, number = os.path.join(export_dir, base), 1
-    while os.path.exists(path):
-        path = os.path.join(export_dir, "%s-%d%s" % (stem, number, ext))
-        number += 1
+    path = save_export_path(export_dir, base)
     tmp = path + ".part"
     with open(tmp, "wb") as f:
         f.write(data)
@@ -143,7 +149,7 @@ class App:
         return {"version": __version__, "root": self.root,
                 "prometheus": self.prom.url if self.prom else None,
                 "prometheus_ok": bool(self.prom and self.prom.ok()),
-                "ffmpeg": shutil.which("ffmpeg") is not None, "grafana_url": self.grafana_url}
+                "ffmpeg": media.find_ffmpeg() is not None, "grafana_url": self.grafana_url}
 
     def prom_labels(self) -> Dict[str, str]:
         """{start_utc: run label} of Prometheus. One h4nb_run_info query runs per rescan."""
@@ -360,7 +366,15 @@ class Handler(BaseHTTPRequestHandler):
         if len(data) != size:
             raise ApiError(400, "the body is shorter than Content-Length")
         path = save_export(self.server.app.export_dir, name, data)
-        self._json(200, {"path": path, "mp4": False})  # MP4 conversion is added in T026.
+        body = {"path": path, "mp4": False}
+        if path.endswith(".webm") and media.find_ffmpeg():
+            mp4 = save_export_path(self.server.app.export_dir, os.path.basename(path)[:-5] + ".mp4")
+            try:
+                media.to_mp4(path, mp4)
+                body = {"path": mp4, "webm": path, "mp4": True}
+            except media.FfmpegError as err:
+                body["mp4_error"] = str(err)  # Keep the WebM. Show the error.
+        self._json(200, body)
 
     def _index(self, app: App, query: Dict[str, List[str]]):
         """The page. A link with the token sets the access cookie and redirects to the clean address,

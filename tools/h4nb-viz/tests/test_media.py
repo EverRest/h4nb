@@ -53,14 +53,15 @@ def test_to_mp4_runs_ffmpeg_with_argument_list(fake_bin, tmp_path):
     dst = tmp_path / "run.mp4"
     media.to_mp4(src, dst)
     argv = fake_bin.read_text().splitlines()
-    assert argv == ["-y", "-i", str(src), "-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "18", str(dst)]
+    assert argv == ["-y", "-loglevel", "error", "-i", str(src), "-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "18", str(dst)]
 
 
 def test_to_mp4_accepts_safari_mp4_input(fake_bin, tmp_path):
     src = tmp_path / "run.mp4"
     dst = tmp_path / "out.mp4"
     media.to_mp4(src, dst)
-    assert fake_bin.read_text().splitlines()[2] == str(src)
+    argv = fake_bin.read_text().splitlines()
+    assert argv[argv.index("-i") + 1] == str(src)
 
 
 def test_to_mp4_rejects_other_input_types(fake_bin, tmp_path):

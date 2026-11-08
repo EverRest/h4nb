@@ -198,7 +198,7 @@ def post(base, path, body=b"", origin=None):
         return err.code, json.loads(err.read())
 
 
-def test_export_writes_file_for_the_page_origin(server, tmp_path):
+def test_export_writes_file_for_the_page_origin(server, tmp_path, no_ffmpeg):
     base, _ = server
     status, body = post(base, "/api/export?name=clip.webm", b"video", origin=base)
     assert status == 200
@@ -534,3 +534,73 @@ def test_export_accepts_localhost_origin(server):
     status, body = call(base, "/api/export?name=lh.png", method="POST", host="localhost:%d" % port,
                         origin="http://localhost:%d" % port, body=b"1")
     assert status == 200 and body["path"].endswith("lh.png")
+
+
+
+FAKE_CONVERTER = """#!/bin/sh
+for a; do last=$a; done
+if [ -n "$FAKE_FFMPEG_ERR" ]; then echo "$FAKE_FFMPEG_ERR" >&2; exit 1; fi
+printf mp4 > "$last"
+"""
+
+
+@pytest.fixture
+def fake_ffmpeg(tmp_path, monkeypatch):
+    """A fake ffmpeg on PATH. It writes the text 'mp4' to its last argument."""
+    bin_dir = tmp_path / "ffbin"
+    bin_dir.mkdir()
+    exe = bin_dir / "ffmpeg"
+    exe.write_text(FAKE_CONVERTER)
+    exe.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}")
+    monkeypatch.delenv("FAKE_FFMPEG_ERR", raising=False)
+
+
+@pytest.fixture
+def no_ffmpeg(tmp_path, monkeypatch):
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    monkeypatch.setenv("PATH", str(empty))
+
+
+def test_status_reports_ffmpeg_on_path(server, fake_ffmpeg):
+    base, _ = server
+    assert get_json(base, "/api/status")[1]["ffmpeg"] is True
+
+
+def test_status_reports_no_ffmpeg(server, no_ffmpeg):
+    base, _ = server
+    assert get_json(base, "/api/status")[1]["ffmpeg"] is False
+
+
+def test_export_converts_webm_to_mp4_when_ffmpeg_exists(server, fake_ffmpeg, tmp_path):
+    base, _ = server
+    status, body = post(base, "/api/export?name=clip.webm", b"video", origin=base)
+    assert status == 200 and body["mp4"] is True
+    assert body["path"].endswith("clip.mp4") and body["webm"].endswith("clip.webm")
+    with open(body["path"], "rb") as f:
+        assert f.read() == b"mp4"
+
+
+def test_export_does_not_overwrite_an_existing_mp4(server, fake_ffmpeg, tmp_path):
+    base, _ = server
+    post(base, "/api/export?name=clip.mp4", b"old", origin=base)
+    _, body = post(base, "/api/export?name=clip.webm", b"video", origin=base)
+    assert body["path"].endswith("clip-1.mp4")
+    with open(tmp_path / "exports" / "clip.mp4", "rb") as f:
+        assert f.read() == b"old"
+
+
+def test_export_keeps_webm_without_ffmpeg(server, no_ffmpeg):
+    base, _ = server
+    status, body = post(base, "/api/export?name=clip.webm", b"video", origin=base)
+    assert status == 200 and body["mp4"] is False and body["path"].endswith("clip.webm")
+    assert "mp4_error" not in body
+
+
+def test_export_keeps_webm_when_ffmpeg_fails(server, fake_ffmpeg, monkeypatch):
+    base, _ = server
+    monkeypatch.setenv("FAKE_FFMPEG_ERR", "Invalid data found")
+    status, body = post(base, "/api/export?name=clip.webm", b"video", origin=base)
+    assert status == 200 and body["mp4"] is False and body["path"].endswith("clip.webm")
+    assert "Invalid data found" in body["mp4_error"]

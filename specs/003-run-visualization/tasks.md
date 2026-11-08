@@ -186,7 +186,8 @@ description: "Task list for h4nb-viz: local web app for the visualization of run
 
 ## Phase 7: More views and media (Phase 2)
 
-- [ ] T026 [P] [US3] Write `src/h4nb_viz/media.py`. Convert WebM (or Safari MP4) to MP4 with `ffmpeg` (research.md R5). Show `ffmpeg` in `/api/status`. The page shows a hint when `ffmpeg` is missing.
+- [x] T026 [P] [US3] Write `src/h4nb_viz/media.py`. Convert WebM (or Safari MP4) to MP4 with `ffmpeg` (research.md R5). Show `ffmpeg` in `/api/status`. The page shows a hint when `ffmpeg` is missing.
+  - Evidence: `python -m pytest tools/h4nb-viz/tests -q` on Python 3.13: 127 passed. Real ffmpeg 9.0.2 converted a VP9 WebM to H.264 yuv420p MP4 (ffprobe checked, 3.000 s).
 - [ ] T027 [P] Write `src/h4nb_viz/orbits.py`. Add `/derived` and `/hist` (research.md R7). Test the code with circular and eccentric two-body orbits. The values of e and inc must match to 1e-6.
 - [ ] T028 Add the color modes e, inc, mass and ID (V3 full) from `/derived`.
 - [ ] T029 Add the plots P1 (Σ(r)), P2 (animated histograms of e and inc) and P3 (a–e plane) in `web/plots.js`.
