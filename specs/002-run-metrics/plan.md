@@ -6,11 +6,12 @@
 
 ## Summary
 
-A separate Python package `tools/h4nb-metrics` reads the output files of `h4nb_run`. It has three commands:
+A separate Python package `tools/h4nb-metrics` reads the output files of `h4nb_run`. It has four commands:
 
 - `serve`: an HTTP exporter for Prometheus (live data).
 - `backfill`: the full curves of finished runs in the OpenMetrics format, loaded with `promtool`.
 - `fake-run`: a generator of realistic run files, for checks without a GPU.
+- `dump`: prints the metrics once and exits. It is a check tool for the exporter.
 
 Two Grafana dashboards ("h4nb runs" and "h4nb past runs") and a `docker-compose.yml` with Prometheus and Grafana complete the feature. The library does not change.
 
@@ -55,8 +56,9 @@ specs/002-run-metrics/
 ├── plan.md               # this file
 ├── tasks.md
 └── contracts/
-    ├── metrics.md        # Prometheus metrics, state values, time to end, backfill
-    └── dashboard.md      # panels, queries, reasons and tooltips of both dashboards
+    ├── metrics.md        # section 0: metric table (single source); sections 1-8: reasons, state, time to end, backfill
+    ├── dashboard.md      # panels, queries, reasons and tooltips of both dashboards
+    └── links.md          # link "Open in h4nb-viz" (URL template, label mapping)
 ```
 
 ### Source code
@@ -94,18 +96,19 @@ tools/h4nb-metrics/
 - **P3. The collector reads at scrape time.** No background thread. Reason: no work when nobody scrapes; no race between a reader thread and the HTTP thread (one lock).
 - **P4. Snapshots: header only.** A snapshot of 1M particles is 64 MB. The exporter reads 32 bytes (FR-008).
 - **P5. Run state from files only** (contracts/metrics.md section 5). The exporter cannot see the exit code. The `.dat` / `.dat.tmp` names and the last time against `t_end` give the state. `stale_after` scales with the segment time.
-- **P6. Backfill with promtool.** Prometheus has no API to add old samples. `promtool tsdb create-blocks-from openmetrics` is the supported way. The command runs in the Prometheus container, so the user needs no local Prometheus. Prometheus loads new blocks at its start, so the command restarts the container.
+- **P6. Backfill with promtool.** Prometheus has no API to add old samples. `promtool tsdb create-blocks-from openmetrics` is the supported way. The command runs in the Prometheus image, so the user needs no local Prometheus. Order of `--load`: stop the `prometheus` service, run `promtool` in a one-off container from the same image on the same data volume, start the `prometheus` service. Reason: a running Prometheus must not share its data directory with a writing `promtool`. The previous version wrote into the live directory; this order replaces it.
 - **P7. Backfill time stamps** = `start_utc` + the cumulative `wall_s` (contracts/metrics.md section 8). Reason: the curves have the real wall-clock shape. The values depend only on the files, so a second backfill gives the same samples (FR-017).
 - **P8. Dashboards from a generator.** `grafana/build_dashboards.py` writes the JSON. A test compares the JSON with the generator and each description with `contracts/dashboard.md`. Reason: the tooltip texts have one source (the contract), and a change in Grafana's UI cannot silently remove a description.
 - **P9. Past-runs dashboard uses `last_over_time(...[$__range])`.** Reason: an instant query finds a sample only 5 minutes back. Backfilled samples are older.
 - **P10. Energy error against simulation time** uses the Grafana XY chart. The two queries (`h4nb_sim_time`, `h4nb_energy_rel_err`) have the same time stamps, so a join by time gives (x, y) pairs.
-- **P11. Linux networking.** On Linux, `host.docker.internal` does not reach a port on 127.0.0.1 of the host. `docker-compose.linux.yml` puts Prometheus and Grafana on the host network and lets them listen on 127.0.0.1 only.
+- **P11. Linux networking.** On Linux, `host.docker.internal` does not reach a port on 127.0.0.1 of the host. `docker-compose.linux.yml` puts Prometheus and Grafana on the host network and lets them listen on 127.0.0.1 only. The file uses the `!reset` tag, so it needs Docker Compose 2.24.0 or later (FR-022).
+- **P12. Links to the viewer** of specs/003 are data links with the template of `contracts/links.md`.
 
 ## Verification done on the prototype (2026-11-08, container, no GPU)
 
 A prototype of all parts exists in the branch `develop`. It was checked as follows:
 
-- 26 tests pass with Python 3.8.20 (`prometheus_client` 0.21.1) and Python 3.13.
+- 26 tests pass with Python 3.8.20 (`prometheus_client` 0.21.1) and Python 3.13. (Re-run on 2026-11-08 in this session: 26 tests pass with Python 3.13.3 and `prometheus_client` from PyPI. The Python 3.8 run is not repeated; see tasks.md, M025.)
 - Exporter: 20 fake runs, one line each second, scrape each 15 s: 0.09 s CPU in 120 s (< 0.1 % of one core), 25 MB resident memory, scrape time 5 ms.
 - `docker compose` with `prom/prometheus:v2.55.1` and `grafana/grafana:11.3.0`: both dashboards load by provisioning. All panels show data for live fake runs (running, stalled, stopped early).
 - Backfill of a `tools/h4nb_pack.sh` archive with two runs: `promtool` made two blocks. "h4nb past runs" showed the run list, the final values and the XY chart against the simulation time.

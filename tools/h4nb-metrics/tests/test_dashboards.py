@@ -51,3 +51,18 @@ def test_every_panel_has_contract_description():  # FR-010, SC-005
             assert p["title"] == title
             assert p["description"].strip(), title
             assert p["description"] == desc.replace("`", ""), title
+
+
+def test_run_record_has_viewer_link_in_both_dashboards():  # links.md section 1 (M027)
+    expected = "http://127.0.0.1:8820/#run=${__data.fields.run:percentencode}"
+    assert build_dashboards.VIEWER_URL == expected
+    for name in ("h4nb-runs.json", "h4nb-past-runs.json"):
+        with open(os.path.join(GRAFANA, "dashboards", name), encoding="utf-8") as f:
+            d = json.load(f)
+        tables = [p for p in panels(d) if p.get("type") == "table" and p.get("title") == "Run record"]
+        assert len(tables) == 1, name
+        overrides = tables[0]["fieldConfig"]["overrides"]
+        run_links = [o for o in overrides if o["matcher"] == {"id": "byName", "options": "run"}]
+        assert len(run_links) == 1, name
+        props = {p["id"]: p["value"] for p in run_links[0]["properties"]}
+        assert props["links"] == [{"title": "Open in h4nb-viz", "url": expected}], name

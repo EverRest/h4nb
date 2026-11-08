@@ -6,6 +6,57 @@ A metric is not exposed for a run when its source does not exist. Example: no `p
 
 Each metric has a reason. The reason says which question of the user the metric answers.
 
+## 0. Metric table (single source of truth)
+
+This table lists every exposed metric. Sections 1 to 8 give the reason and the rule for each metric. A name that is not in this table is not exposed.
+
+Rules for this table:
+
+- The name column is the name that Prometheus stores. A counter ends with `_total`.
+- The `run` label is on every metric of a run. Exporter metrics have no `run` label, except `h4nb_exporter_read_errors_total`.
+- A live series (from the exporter) has no `origin` label.
+- A backfilled series (from `h4nb-metrics backfill`) has the label `origin="backfill"`.
+- The prototype (`tools/h4nb-metrics/src/h4nb_metrics/metrics.py`) defines the same names. It writes the counter names without `_total`. The client library adds the suffix.
+
+| Metric | Type | Labels (besides `run`) | Unit | Source file (column or field) |
+|---|---|---|---|---|
+| `h4nb_run_info` | gauge, value 1 | `host`, `commit`, `build_type`, `gpu`, `ranks`, `mpi`, `start_utc`, `preset` | - | `run_info.txt`; `config.used` (`preset`) |
+| `h4nb_run_state` | gauge | - | enum (section 5) | file names and last time, section 5 |
+| `h4nb_sim_time` | gauge | - | sim time | `energy.dat` `time` (last line) |
+| `h4nb_t_end` | gauge | - | sim time | `config.used` `t_end` |
+| `h4nb_progress_ratio` | gauge | - | 1 (0 to 1) | derived: `h4nb_sim_time` / `h4nb_t_end` |
+| `h4nb_wall_seconds_total` | counter | - | s | `performance.dat` `wall_s` (sum) |
+| `h4nb_eta_seconds` | gauge | - | s | derived, section 6 |
+| `h4nb_last_update_age_seconds` | gauge | - | s | modification time of the `.dat` files |
+| `h4nb_run_start_timestamp_seconds` | gauge | - | Unix s | `run_info.txt` `start_utc` |
+| `h4nb_run_end_timestamp_seconds` | gauge | - | Unix s | live: modification time of `energy.dat`; backfill: time stamp of its last line (section 8) |
+| `h4nb_particles` | gauge | - | count | `config.used` `n`, else snapshot header (section 1) |
+| `h4nb_config_value` | gauge | `key` | key unit | `config.used` (numeric keys only) |
+| `h4nb_energy_rel_err` | gauge | - | 1 | `energy.dat` `rel_err` |
+| `h4nb_energy_max_rel_err` | gauge | - | 1 | `energy.dat` `max_rel_err` |
+| `h4nb_energy_mean_rel_err` | gauge | - | 1 | `energy.dat` `mean_rel_err` |
+| `h4nb_energy_total` | gauge | - | energy | `energy.dat` `E` |
+| `h4nb_dissipated_work` | gauge | - | energy | `energy.dat` `W_diss` |
+| `h4nb_momentum_rel_change` | gauge | - | 1 | `momentum.dat` `dP_rel` |
+| `h4nb_angular_momentum_rel_change` | gauge | - | 1 | `momentum.dat` `dL_rel` |
+| `h4nb_period_max_rel_err` | gauge | `period` | 1 | `energy_periods.dat` `max_rel_err` (written at the end of the run) |
+| `h4nb_dt_min` | gauge | - | sim time | `timesteps.dat` `dt_min` |
+| `h4nb_dt_mean` | gauge | - | sim time | `timesteps.dat` `dt_mean` |
+| `h4nb_dt_max` | gauge | - | sim time | `timesteps.dat` `dt_max` |
+| `h4nb_active_per_block_step` | gauge | - | count | `timesteps.dat` `mean_active_per_block_step` |
+| `h4nb_r_min` | gauge | - | length | `timesteps.dat` `r_min` |
+| `h4nb_block_steps_total` | counter | - | count | `performance.dat` `block_steps` (sum) |
+| `h4nb_active_updates_total` | counter | - | count | `performance.dat` `active` (sum) |
+| `h4nb_pairs_per_second` | gauge | - | 1/s | `performance.dat` `pairs_per_s` (last segment) |
+| `h4nb_gflops` | gauge | - | GFLOP/s | derived: 60 × `pairs_per_s` / 1e9 |
+| `h4nb_particle_updates_per_second` | gauge | - | 1/s | derived: `active` / `wall_s` (last segment) |
+| `h4nb_segment_wall_seconds` | gauge | - | s | `performance.dat` `wall_s` (last segment) |
+| `h4nb_exporter_runs` | gauge | - | count | exporter: number of runs found |
+| `h4nb_exporter_read_errors_total` | counter | `run` | count | exporter: read errors per run (FR-013) |
+| `h4nb_exporter_scrape_seconds` | gauge | - | s | exporter: time of the last collection |
+
+The table has 34 metrics. The set of names equals the names in the prototype (`metrics.py`, with `_total` added to the counters). The test `test_exposes_contract_metrics` in `tools/h4nb-metrics/tests/test_exporter.py` checks that the exporter exposes each name of `metrics.py`. It does not read this table. A change to this table needs the same change in `metrics.py`.
+
 ## 1. Run status
 
 | Metric | Type | Unit | Source | Reason |
@@ -92,7 +143,9 @@ The backfill writes the OpenMetrics text format with a time stamp on each sample
 | `h4nb_run_start_timestamp_seconds` | Unix s | The start of the run. The run list of "h4nb past runs" uses it to open the time range of the run. |
 | `h4nb_run_end_timestamp_seconds` | Unix s | The time stamp of the last line. |
 
-The live exporter also exposes these two gauges.
+The live exporter also exposes these two gauges. For a live run, `h4nb_run_end_timestamp_seconds` is the modification time of `energy.dat`. It is not the time stamp of its last line. Section 0 lists the source of each metric.
+
+Live series have no `origin` label. Backfilled series always have `origin="backfill"`. A query that must select one kind of series uses the label: `origin!="backfill"` selects live series, and `origin="backfill"` selects backfilled series.
 
 ### Backfill time stamps
 

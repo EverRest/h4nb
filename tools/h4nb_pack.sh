@@ -76,7 +76,9 @@ done
   if command -v nvidia-smi >/dev/null 2>&1; then nvidia-smi 2>&1 || true; else echo "nvidia-smi: not found"; fi
   echo
   echo "== files (bytes, path) =="
-  (cd "$root" && find . -type f ! -name MANIFEST.txt -printf '%s %P\n' | sort -k2)
+  # Portable: GNU find -printf does not exist on macOS (BSD find).
+  (cd "$root" && find . -type f ! -name MANIFEST.txt -print0 | sort -z | while IFS= read -r -d '' f; do
+    printf '%s %s\n' "$(wc -c < "$f" | tr -d ' ')" "${f#./}"; done | sort -k2)
   echo
   echo "== sha256 =="
   (cd "$root" && find . -type f ! -name MANIFEST.txt -print0 | sort -z | xargs -0 sha256sum)

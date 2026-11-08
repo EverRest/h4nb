@@ -7,6 +7,7 @@ import shutil
 import subprocess
 import sys
 import time
+from typing import Optional
 
 from . import __version__
 
@@ -45,6 +46,9 @@ def cmd_backfill(a) -> int:
     out = a.output
     if a.load and out == "-":
         out = os.path.join(a.compose_dir, "backfill", "h4nb-backfill.om")
+    if a.load and out != "-" and backfill_rel(a.compose_dir, out) is None:  # check before any write
+        print("h4nb-metrics backfill: with --load, the output must be in %s/backfill" % a.compose_dir, file=sys.stderr)
+        return 2
     if out == "-":
         n = write_openmetrics(runs, sys.stdout)
     else:
@@ -59,29 +63,40 @@ def cmd_backfill(a) -> int:
     return load_into_compose(a.compose_dir, out)
 
 
+def backfill_rel(compose_dir: str, om_file: str) -> Optional[str]:
+    """The path of om_file inside <compose_dir>/backfill, or None when it is outside."""
+    rel = os.path.relpath(os.path.abspath(om_file), os.path.join(os.path.abspath(compose_dir), "backfill"))
+    if rel == os.pardir or rel.startswith(os.pardir + os.sep):
+        return None
+    return rel
+
+
+def _run(cmd) -> int:
+    print("+ " + " ".join(cmd), file=sys.stderr)
+    return subprocess.run(cmd).returncode
+
+
 def load_into_compose(compose_dir: str, om_file: str) -> int:
-    """Runs promtool in the Prometheus container of docker-compose.yml (spec FR-016).
+    """Adds the blocks with promtool to the Prometheus data volume of docker-compose.yml (spec FR-016, plan P6).
+    Prometheus is stopped while promtool writes. It is started again even when promtool fails.
     The compose file mounts <compose_dir>/backfill at /backfill."""
     if shutil.which("docker") is None:
         print("h4nb-metrics backfill: docker is not found. Run promtool by hand:\n"
               "  promtool tsdb create-blocks-from openmetrics %s <prometheus data dir>" % om_file, file=sys.stderr)
         return 1
-    rel = os.path.relpath(os.path.abspath(om_file), os.path.join(os.path.abspath(compose_dir), "backfill"))
-    if rel.startswith(".."):
+    rel = backfill_rel(compose_dir, om_file)
+    if rel is None:
         print("h4nb-metrics backfill: with --load, the output must be in %s/backfill" % compose_dir, file=sys.stderr)
         return 2
+    # The compose files of this directory. Only the default file is used: promtool needs no network.
     base = ["docker", "compose", "--project-directory", compose_dir]
-    steps = [
-        base + ["exec", "-T", "prometheus", "promtool", "tsdb", "create-blocks-from", "openmetrics",
-                "/backfill/" + rel, "/prometheus"],
-        base + ["restart", "prometheus"],  # Prometheus loads the new blocks at the start.
-    ]
-    for cmd in steps:
-        print("+ " + " ".join(cmd), file=sys.stderr)
-        r = subprocess.run(cmd)
-        if r.returncode != 0:
-            return r.returncode
-    return 0
+    if _run(base + ["stop", "prometheus"]) != 0:  # stop fails: nothing was written, Prometheus is unchanged.
+        return 1
+    # One-off container from the same image and the same data volume.
+    rc = _run(base + ["run", "--rm", "--no-deps", "--entrypoint", "promtool", "prometheus", "tsdb",
+                      "create-blocks-from", "openmetrics", "/backfill/" + rel, "/prometheus"])
+    start_rc = _run(base + ["start", "prometheus"])  # Prometheus loads the new blocks at the start.
+    return rc or start_rc
 
 
 def cmd_fake_run(a) -> int:

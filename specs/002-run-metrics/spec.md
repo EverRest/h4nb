@@ -99,7 +99,7 @@ A researcher gets a `make pack` archive from the cluster. Prometheus did not wat
 
 - The last line of a `.dat` file is not complete, because `h4nb_run` writes it at this moment. The exporter ignores the incomplete line. It reads the line at the next scrape.
 - `h4nb_run` renames `X.dat.tmp` to `X.dat` at the end. The exporter continues to read the same data. The values do not jump back.
-- A run stops with exit code 2 or 3. `h4nb_run` publishes the partial `.dat` files. The exporter reports state 2 (stopped early), because the last time is less than `t_end`.
+- A run stops with exit code 1, 2 or 3 (`h4nb_run` exit codes: 1 runtime error, 2 settings or input error, 3 NaN). `h4nb_run` publishes the partial `.dat` files. The exporter reports state 2 (stopped early), because the last time is less than `t_end`. A run with exit code 2 may write no `.dat` file. Then the exporter exposes no run metrics for it.
 - A value is `nan` or `inf` in a `.dat` file. The exporter exposes it as NaN. Grafana shows a gap. The run state panel shows the stop.
 - An MPI run stops with an error on another rank. The files stay `*.dat.tmp` (file-formats.md section 4). The exporter reports state 3 (stalled) after `stale_after`.
 - A file is removed or replaced by a shorter file. The exporter reads the file again from the start.
@@ -126,11 +126,13 @@ A researcher gets a `make pack` archive from the cluster. Prometheus did not wat
 - **FR-013**: An error in one run (a file that cannot be read, a bad line) MUST NOT stop the exporter or remove the metrics of other runs. The exporter MUST count the errors in `h4nb_exporter_read_errors_total`.
 - **FR-014**: The package MUST run with Python 3.8 or later. Reason: cluster login nodes often have an old system Python.
 - **FR-015**: All documentation, dashboard titles and dashboard descriptions MUST be in ASD-STE100 English.
-- **FR-016**: The package MUST provide `h4nb-metrics backfill PATH...`. It MUST write the rows of all `.dat` files of each run in the OpenMetrics text format with time stamps (`contracts/metrics.md` section 8). With `--load`, it MUST give the file to `promtool tsdb create-blocks-from openmetrics` in the Prometheus container of `docker-compose.yml`. Reason: `promtool` is the supported way to add old data to Prometheus.
+- **FR-016**: The package MUST provide `h4nb-metrics backfill PATH...`. It MUST write the rows of all `.dat` files of each run in the OpenMetrics text format with time stamps (`contracts/metrics.md` section 8). With `--load`, it MUST do three steps in this order. First, it stops the Prometheus container of `docker-compose.yml`. Second, it runs `promtool tsdb create-blocks-from openmetrics` in a one-off container of the same image, on the same data volume. Third, it starts the Prometheus container again, even when `promtool` fails. Prometheus must not run while `promtool` writes to its data directory. Prometheus loads new blocks only at its start. Reason: `promtool` is the supported way to add old data to Prometheus.
 - **FR-017**: Backfilled series MUST have the label `origin="backfill"`. A second backfill of the same run MUST give the same samples, so that Prometheus does not store them two times.
 - **FR-018**: The repository MUST contain a second dashboard "h4nb past runs" (`contracts/dashboard.md`, part 2). It MUST have the same rules for the descriptions as FR-010.
 - **FR-019**: Prometheus in `docker-compose.yml` MUST keep data for 5 years. Reason: retention removes data by its time stamp. Backfilled runs are old when they are loaded. The data of one run is a few MB.
 - **FR-020**: `docker-compose.yml` MUST publish the ports of Grafana (3000) and Prometheus (9090) on `127.0.0.1` only. Prometheus MUST scrape the exporter on the host through `host.docker.internal` (on Linux with `extra_hosts: host-gateway`). Reason: a server is reached through an SSH tunnel (section "Live data and past runs"). An open port is a risk on a shared machine.
+- **FR-021**: The dashboards MUST link each run to the viewer of specs/003 with the link contract in `contracts/links.md`. The link is a data link on the run column of the run record tables. Reason: the user opens a run in the app from Grafana with one click.
+- **FR-022**: `docker-compose.linux.yml` MUST need Docker Compose 2.24.0 or later, because it uses the `!reset` tag. The README MUST state this version.
 
 ### Out of scope
 
@@ -143,7 +145,7 @@ These items can be a later feature. They do not change this feature.
 
 ### Key Entities
 
-- **Run**: one output directory of `h4nb_run`. The `run` label is the directory name. When two runs have the same directory name, the label is the path relative to the given path.
+- **Run**: one output directory of `h4nb_run`. The `run` label is the directory name. When two runs have the same directory name, the label is the path relative to the parent of the given path. The first part of that path is the name of the given directory.
 - **Table**: one `.dat` file of a run, read by its header columns.
 - **Run record**: `config.used` and `run_info.txt` of a run.
 
@@ -151,7 +153,7 @@ These items can be a later feature. They do not change this feature.
 
 ### Measurable Outcomes
 
-- **SC-001**: `git diff` of the feature shows changes only in `tools/h4nb-metrics/`, `specs/002-run-metrics/` and the documentation index files.
+- **SC-001**: The feature diff shows changes only in `tools/h4nb-metrics/`, `specs/002-run-metrics/` and the documentation index files. Check with `git diff main --stat`. Changes in `specs/003-run-visualization/` are out of scope for this check, because they belong to another feature.
 - **SC-002**: With 20 fake runs that each add one line each second, the exporter uses less than 1 % of one CPU core on average with a scrape interval of 15 s, and less than 50 MB of resident memory.
 - **SC-003**: A scrape of 20 runs takes less than 200 ms.
 - **SC-004**: `docker compose up` and the fake-run generator show values in all panels of the dashboard within 60 s, with no manual step in Grafana.

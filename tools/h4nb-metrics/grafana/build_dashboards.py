@@ -8,6 +8,8 @@ import json
 import os
 
 DS = {"type": "prometheus", "uid": "prometheus"}
+# links.md section 1. The field template uses the run of the clicked row.
+VIEWER_URL = "http://127.0.0.1:8820/#run=${__data.fields.run:percentencode}"
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 STATE_MAPPINGS = [{"type": "value", "options": {
@@ -147,7 +149,10 @@ def record_table(run_sel, wrap=lambda e: e):
             "transformations": [{"id": "merge", "options": {}},
                                 {"id": "organize", "options": {"excludeByName": exclude, "renameByName": rename,
                                                                "indexByName": order}}],
-            "fieldConfig": {"defaults": {"custom": {"align": "auto", "minWidth": 60}}, "overrides": []},
+            "fieldConfig": {"defaults": {"custom": {"align": "auto", "minWidth": 60}}, "overrides": [
+                # links.md section 1: "Open in h4nb-viz", one link per run row.
+                {"matcher": {"id": "byName", "options": "run"}, "properties": [
+                    {"id": "links", "value": [{"title": "Open in h4nb-viz", "url": VIEWER_URL}]}]}]},
             "options": {"showHeader": True, "cellHeight": "sm"}}
 
 

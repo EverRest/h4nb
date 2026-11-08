@@ -1634,7 +1634,25 @@
             "minWidth": 60
           }
         },
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "run"
+            },
+            "properties": [
+              {
+                "id": "links",
+                "value": [
+                  {
+                    "title": "Open in h4nb-viz",
+                    "url": "http://127.0.0.1:8820/#run=${__data.fields.run:percentencode}"
+                  }
+                ]
+              }
+            ]
+          }
+        ]
       },
       "options": {
         "showHeader": true,

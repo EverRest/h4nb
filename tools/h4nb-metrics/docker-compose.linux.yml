@@ -11,7 +11,6 @@ services:
       - --config.file=/etc/prometheus/prometheus.yml
       - --storage.tsdb.path=/prometheus
       - --storage.tsdb.retention.time=5y
-      - --web.enable-lifecycle
       - --web.listen-address=127.0.0.1:9090
     volumes:
       - ./prometheus/prometheus-linux.yml:/etc/prometheus/prometheus.yml:ro
