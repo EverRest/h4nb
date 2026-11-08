@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>h4nb-viz</title>
+  <link rel="stylesheet" href="/web/style.css">
+  <link rel="stylesheet" href="/web/vendor/uPlot.min.css">
+  <script type="importmap">
+    {"imports": {"three": "/web/vendor/three.module.min.js"}}
+  </script>
+</head>
+<body>
+  <aside id="runs">
+    <h2>Runs</h2>
+    <ul id="run-list"></ul>
+  </aside>
+  <main>
+    <div id="view"></div>
+    <div id="overlay">
+      <span id="pres-name"></span>
+      <span id="pres-time"></span>
+    </div>
+    <section id="plots" aria-label="Plots"></section>
+    <div id="controls">
+      <div class="row">
+        <button id="play">Play</button>
+        <input id="slider" type="range" min="0" max="0" value="0" aria-label="Time">
+        <span id="time"></span>
+      </div>
+      <div class="row">
+        <label>Colour
+          <select id="color">
+            <option value="speed">Speed</option>
+            <option value="radius">Radius</option>
+          </select>
+        </label>
+        <canvas id="colorbar" width="160" height="10" aria-hidden="true"></canvas>
+        <span id="range"></span>
+        <button data-preset="top">Top</button>
+        <button data-preset="edge">Edge</button>
+        <button data-preset="fly">Fly</button>
+        <button id="plots-toggle" aria-pressed="true">Plots</button>
+        <button id="present">Presentation (P)</button>
+        <button id="theme">Theme (T)</button>
+        <button id="record">Record</button>
+        <button id="png-view">View PNG</button>
+        <button id="png-card">Card PNG</button>
+      </div>
+    </div>
+    <div id="status" role="status"></div>
+  </main>
+  <script type="module" src="/web/app.js"></script>
+</body>
+</html>

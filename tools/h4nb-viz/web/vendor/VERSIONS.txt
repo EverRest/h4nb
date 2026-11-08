@@ -1,0 +1,10 @@
+Vendored browser libraries of h4nb-viz.
+Do not edit these files. To update, replace the file and its line here.
+
+File                    Version  Source URL                                                                  SHA-256
+three.module.min.js     r160     https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.min.js        3e690ac7d180b0aadf0891bea39eec643e29e2d3e75c99b18689518665f69ba6
+uPlot.esm.js            1.6.30   https://cdn.jsdelivr.net/npm/uplot@1.6.30/dist/uPlot.esm.js                 86764b8fd3b92ac2deaaaab6cb1e3568251cea4e779aac3b3a5c8ed1c7dd1fc0
+uPlot.min.css           1.6.30   https://cdn.jsdelivr.net/npm/uplot@1.6.30/dist/uPlot.min.css                df630c6a8d6f8eeaff264b50f73ce5b114f646ffd9a0bb74f049b0a00135fa04
+LICENSE-three.txt       r160     https://cdn.jsdelivr.net/npm/three@0.160.0/LICENSE                          852e0e8699169bf9f6fdc6bda3e682d078dcbc738b5d33e74df594721bff271d
+LICENSE-uPlot.txt       1.6.30   https://cdn.jsdelivr.net/npm/uplot@1.6.30/LICENSE                           8f989229699b4fe2f1a0432d0e9edc338a8a911e250e2d1b01ecd770a5f5b1bd
+OrbitControls.js        r160     https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/controls/OrbitControls.js  5a44a9e86a2a0fb11933eed69bc2cd33c76a496854c1aed6ed776efa87d7b064
