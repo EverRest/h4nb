@@ -128,7 +128,8 @@ static void test_update_particle() {
 
 // Step estimate from the corrector at t1 (issue A3). h = 1 here (T = 1024 ticks, tick = 1/1024).
 // dt = 0 (eta = 0) gives the finest level and kDtUnderflow. dt = Inf gives the coarsest level. NaN (0/0, no force)
-// keeps the level with no status bit.
+// keeps the level with no status bit. The eta values (0 and 1e308) are edge inputs chosen to hit each case, not
+// realistic ones.
 static void test_step_estimate_edges() {
   Config c;
   c.dt_max = 1.0;

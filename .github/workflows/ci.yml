@@ -1,5 +1,5 @@
 # Compile check only. A runner without a GPU shows that the code builds, not that it is correct (constitution).
-# -Wall -Wextra: the host code has no warnings with these flags (checked with the container build).
+# -Wall -Wextra: warnings only, the build does not fail on them (no -Werror). Not checked on this runner.
 name: build
 # workflow_dispatch adds a "Run workflow" button on the Actions page (manual start).
 on: [push, pull_request, workflow_dispatch]

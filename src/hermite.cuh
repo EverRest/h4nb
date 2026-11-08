@@ -195,8 +195,9 @@ H4_HD unsigned update_particle(const StepParams& p, bool is_center, d4 a1, d4 j1
     a = a1;
     j = j1;
     // A NaN step estimate keeps the current level (issue A3). With no force (a1 = j1 = 0, so 0/0) this is normal:
-    // the level stays and there is no status bit, as in init_level(). dt = 0 gives the finest level and Inf the
-    // coarsest one, through choose_level().
+    // the level stays and there is no status bit. Unlike init_level(), which gives the coarsest level and
+    // kInitStepInvalid, a later step keeps its level. dt = 0 gives the finest level and Inf the coarsest one, through
+    // choose_level().
     if (p.fixed_level >= 0) {
       lv = p.fixed_level;
     } else if (dtw != dtw) {
