@@ -37,6 +37,22 @@ class ArchiveError(ValueError):
     """The archive cannot be read, or it has no such member."""
 
 
+def is_archive(path: str) -> bool:
+    """True when path is a regular file with a .tar, .tar.gz or .tgz suffix."""
+    return os.path.isfile(path) and (
+        path.endswith(".tar.gz") or path.endswith(".tgz") or path.endswith(".tar")
+    )
+
+
+def archive_stem(path: str) -> str:
+    """The archive name without its suffix. Used in the run name `<stem>~<run>`."""
+    name = os.path.basename(path)
+    for suffix in (".tar.gz", ".tgz", ".tar"):
+        if name.endswith(suffix):
+            return name[: -len(suffix)]
+    return name
+
+
 def _open_tar_bytes(path: str) -> IO[bytes]:
     """Open an archive for reading the uncompressed tar bytes. The signature decides the codec."""
     with open(path, "rb") as f:
@@ -195,6 +211,26 @@ class Archive:
             with contextlib.suppress(OSError):
                 os.unlink(path)
                 total -= size
+
+    def materialize(self, run: str, dest_dir: str) -> str:
+        """Extract every member of one run into dest_dir. Return dest_dir.
+
+        Uncompressed tar members are read by seeking (via the cached tar copy). A member that was
+        compressed on its own is decompressed into the cache first, then copied into dest_dir.
+        """
+        names = self.runs().get(run)
+        if names is None:
+            raise ArchiveError("%s: no run %s" % (self.path, run))
+        os.makedirs(dest_dir, exist_ok=True)
+        for name in names:
+            data = self.read(run, name)
+            target = os.path.join(dest_dir, name)
+            os.makedirs(os.path.dirname(target), exist_ok=True)
+            tmp = target + ".tmp"
+            with open(tmp, "wb") as f:
+                f.write(data)
+            os.replace(tmp, target)
+        return dest_dir
 
     def _error(self, e: Exception) -> ArchiveError:
         return ArchiveError("cannot read archive %s: %s" % (self.path, str(e) or type(e).__name__))

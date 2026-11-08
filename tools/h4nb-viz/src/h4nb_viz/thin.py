@@ -3,16 +3,12 @@ from __future__ import annotations
 
 import os
 import shutil
-import struct
 from typing import List
 
 import numpy as np
 
 from .runs import central_id_of
-from .snapshots import list_frames, subset_indices
-
-THIN_HEADER = struct.Struct("<8sIIQQd")  # magic, version, seed, k, n, time: 40 bytes
-THIN_MAGIC = b"H4NBTHIN"
+from .snapshots import THIN_HEADER, THIN_MAGIC, list_frames, subset_indices
 
 
 def copy_run_files(run_dir: str, out_dir: str) -> None:

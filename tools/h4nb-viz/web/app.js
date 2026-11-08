@@ -69,7 +69,10 @@ function renderRuns(runs) {
     button.textContent = run.run;
     button.addEventListener("click", () => selectRun(run.run).catch((e) => setStatus(e.message)));
     const info = document.createElement("small");
-    info.textContent = `${run.state} · ${run.snapshots} snapshots`;
+    const tags = [run.state, `${run.snapshots} snapshots`];
+    if (run.thin) tags.push("thin");
+    if (run.archive) tags.push("archive");
+    info.textContent = tags.join(" · ");
     item.append(button, info);
     list.append(item);
   }
@@ -434,10 +437,49 @@ function startLoop() {
   requestAnimationFrame(frame);
 }
 
+function isArchiveName(name) {
+  const lower = name.toLowerCase();
+  return lower.endsWith(".tar.gz") || lower.endsWith(".tgz") || lower.endsWith(".tar");
+}
+
+async function uploadArchive(file) {
+  if (!isArchiveName(file.name)) {
+    setStatus("Drop a .tar.gz, .tgz or .tar archive from h4nb_pack.sh.");
+    return;
+  }
+  setStatus(`Uploading ${file.name}…`);
+  const response = await fetch(`/api/archive?name=${encodeURIComponent(file.name)}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/octet-stream" },
+    body: file,
+  });
+  const body = await response.json();
+  if (!response.ok) throw new Error(body.error || `HTTP ${response.status}`);
+  const names = (body.runs || []).join(", ") || "(no runs with config.used)";
+  setStatus(`Archive loaded: ${names}`);
+  await refreshRuns();
+}
+
+function bindArchiveDrop() {
+  // Drag and drop of a pack archive (FR-015 / T032). The file goes to the cache, not into a run directory.
+  document.addEventListener("dragover", (event) => {
+    if (![...event.dataTransfer.types].includes("Files")) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "copy";
+  });
+  document.addEventListener("drop", (event) => {
+    const file = event.dataTransfer && event.dataTransfer.files && event.dataTransfer.files[0];
+    if (!file) return;
+    event.preventDefault();
+    uploadArchive(file).catch((e) => setStatus(e.message));
+  });
+}
+
 function main() {
   applyTheme(savedTheme());
   setPlotsShown(savedPlots());
   bindControls();
+  bindArchiveDrop();
   if (!hasToken()) {
     setStatus("No access token in this tab. Open the link that the server printed.");
     return;
@@ -458,7 +500,7 @@ function main() {
   setInterval(refreshSeries, SERIES_MS);
   setInterval(readServerStatus, STATUS_MS);
   setInterval(playTick, 1000 / PLAY_FPS);
-  setStatus("Select a run.");
+  setStatus("Select a run. Drop a pack archive to open it.");
 }
 
 main();

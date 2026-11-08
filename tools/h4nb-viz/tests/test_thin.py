@@ -139,3 +139,70 @@ def test_copies_tables_and_records(run, tmp_path):
     for name in RUN_RECORDS:
         with open(os.path.join(run, name), "rb") as a, open(os.path.join(out, name), "rb") as b:
             assert a.read() == b.read(), name
+
+
+def test_open_thin_and_list_frames_prefer_thin(run, tmp_path):
+    from h4nb_viz.snapshots import list_frames, open_thin
+
+    out = str(tmp_path / "out")
+    thin_run(run, out, max_points=50, seed=1)
+    snap = open_thin(os.path.join(out, "snap_final.thin"))
+    assert snap is not None and snap.thin and snap.n == 50 and snap.seed == 1
+    assert snap.array("id")[0] == 0
+    frames = list_frames(out)
+    assert all(f.name.endswith(".thin") for f in frames)
+    assert [f.name for f in frames] == ["snap_000000.thin", "snap_000001.thin", "snap_000002.thin", "snap_final.thin"]
+
+
+def test_open_thin_rejects_truncated_file(run, tmp_path):
+    from h4nb_viz.snapshots import open_thin
+
+    out = str(tmp_path / "out")
+    thin_run(run, out, max_points=50, seed=1)
+    path = os.path.join(out, "snap_final.thin")
+    with open(path, "r+b") as f:
+        f.truncate(os.path.getsize(path) - 1)
+    assert open_thin(path) is None
+
+
+def test_server_reads_thin_run(run, tmp_path):
+    """A thinned run is listed with thin=true and serves frames of size k."""
+    import json
+    import threading
+    import urllib.request
+
+    from h4nb_viz.server import make_server
+    from h4nb_viz.snapshots import FRAME_HEADER
+
+    out = str(tmp_path / "root" / "thin_run")
+    thin_run(run, out, max_points=50, seed=1)
+    root = str(tmp_path / "root")
+    web = tmp_path / "web"
+    web.mkdir()
+    (web / "index.html").write_text("<!doctype html>")
+    httpd = make_server(root, port=0, export_dir=str(tmp_path / "ex"), web_dir=str(web))
+    token = httpd.app.token
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    try:
+        base = "http://127.0.0.1:%d" % httpd.server_address[1]
+
+        def get(path):
+            req = urllib.request.Request(base + path, headers={"X-H4NB-Token": token})
+            with urllib.request.urlopen(req, timeout=10) as r:
+                return r.status, dict(r.headers), r.read()
+
+        status, _, body = get("/api/runs")
+        runs = json.loads(body)
+        assert status == 200
+        entry = next(r for r in runs if r["run"] == "thin_run")
+        assert entry["thin"] is True and entry["n"] == 50 and entry["snapshots"] == 4
+        status, headers, body = get("/api/runs/thin_run/ids?max_points=200000")
+        assert status == 200 and headers["X-H4NB-Count"] == "50"
+        status, _, body = get("/api/runs/thin_run/frames/0?max_points=200000&fields=pos,vel")
+        assert status == 200
+        _magic, _ver, count, fields, _t, *_rest = FRAME_HEADER.unpack(body[:40])
+        assert (count, fields) == (50, 3)
+        assert len(body) == 40 + 24 * 50
+    finally:
+        httpd.shutdown()
+        httpd.server_close()

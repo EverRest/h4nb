@@ -22,6 +22,10 @@ FRAME_HEADER = struct.Struct("<4sIIId3ff")  # magic, version, count, fields, tim
 FRAME_MAGIC = b"H4VF"
 FIELD_POS, FIELD_VEL, FIELD_MASS = 1, 2, 4
 NUMBERED = re.compile(r"snap_\d{6}\.snap")
+THIN_NUMBERED = re.compile(r"snap_\d{6}\.thin")
+THIN_HEADER = struct.Struct("<8sIIQQd")  # magic, version, seed, k, n, time: 40 bytes
+THIN_MAGIC = b"H4NBTHIN"
+THIN_HEADER_BYTES = THIN_HEADER.size
 
 
 class Snapshot:
@@ -60,15 +64,77 @@ def open_snapshot(path: str) -> Optional[Snapshot]:
     return Snapshot(path, n, time)
 
 
-def list_frames(run_dir: str) -> List[Snapshot]:
-    """Valid snapshots of a run, sorted by time. snap_final.snap counts only when its time is larger
-    than the time of the last numbered snapshot."""
+class ThinSnapshot:
+    """One complete .thin file (contracts/frame-format.md section 2). Same array() names as Snapshot."""
+
+    thin = True
+
+    def __init__(self, path: str, k: int, time: float, seed: int, n_source: int):
+        self.path = path
+        self.name = os.path.basename(path)
+        self.n = k  # Particle count in the thin file. The server uses this as N for the run.
+        self.time = time
+        self.seed = seed
+        self.n_source = n_source
+
+    def array(self, name: str) -> np.ndarray:
+        """Return one array as a read-only memmap or a view. Other arrays are not read."""
+        k = self.n
+        if k == 0:
+            return np.empty(0, dtype=ARRAY_DTYPES.get(name, "<f8" if name in ("id", "m") else "<f4"))
+        if name == "id":
+            return np.memmap(self.path, dtype="<i8", mode="r", offset=THIN_HEADER_BYTES, shape=(k,))
+        if name == "m":
+            return np.memmap(self.path, dtype="<f8", mode="r",
+                             offset=THIN_HEADER_BYTES + 8 * k, shape=(k,))
+        pos_off = THIN_HEADER_BYTES + 16 * k
+        vel_off = pos_off + 12 * k
+        if name in ("x", "y", "z"):
+            axis = ("x", "y", "z").index(name)
+            pos = np.memmap(self.path, dtype="<f4", mode="r", offset=pos_off, shape=(k, 3))
+            return np.asarray(pos[:, axis])
+        if name in ("vx", "vy", "vz"):
+            axis = ("vx", "vy", "vz").index(name)
+            vel = np.memmap(self.path, dtype="<f4", mode="r", offset=vel_off, shape=(k, 3))
+            return np.asarray(vel[:, axis])
+        raise KeyError(name)
+
+
+def open_thin(path: str) -> Optional[ThinSnapshot]:
+    """Return the thin snapshot, or None when the file is missing, not v1, or not complete yet."""
     try:
-        names = sorted(f for f in os.listdir(run_dir) if NUMBERED.fullmatch(f))
+        size = os.path.getsize(path)
+        with open(path, "rb") as f:
+            head = f.read(THIN_HEADER_BYTES)
+    except OSError:
+        return None
+    if len(head) != THIN_HEADER_BYTES:
+        return None
+    magic, version, seed, k, n_source, time = THIN_HEADER.unpack(head)
+    if magic != THIN_MAGIC or version != 1:
+        return None
+    # id 8 + m 8 + pos 12 + vel 12 = 40 bytes per particle.
+    if size != THIN_HEADER_BYTES + 40 * k:
+        return None
+    return ThinSnapshot(path, k, time, seed, n_source)
+
+
+def list_frames(run_dir: str) -> List:
+    """Valid snapshots of a run, sorted by time. Prefer .thin frames when any exist (FR-019).
+    snap_final counts only when its time is larger than the time of the last numbered snapshot."""
+    thin = _list_named(run_dir, THIN_NUMBERED, open_thin, "snap_final.thin")
+    if thin:
+        return thin
+    return _list_named(run_dir, NUMBERED, open_snapshot, "snap_final.snap")
+
+
+def _list_named(run_dir: str, pattern: re.Pattern, opener, final_name: str) -> List:
+    try:
+        names = sorted(f for f in os.listdir(run_dir) if pattern.fullmatch(f))
     except OSError:
         return []
-    frames = [s for s in (open_snapshot(os.path.join(run_dir, f)) for f in names) if s is not None]
-    final = open_snapshot(os.path.join(run_dir, "snap_final.snap"))
+    frames = [s for s in (opener(os.path.join(run_dir, f)) for f in names) if s is not None]
+    final = opener(os.path.join(run_dir, final_name))
     if final is not None and (not frames or final.time > frames[-1].time):
         frames.append(final)
     return sorted(frames, key=lambda s: s.time)

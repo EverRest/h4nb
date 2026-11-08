@@ -77,7 +77,9 @@ rsync -av gpu-host:/path/to/RUN_DIR/ ./runs/RUN_DIR/
 h4nb-viz serve ./runs
 ```
 
-Serve the directory that holds the runs. Reading a run from an archive of `tools/h4nb_pack.sh` is not supported yet.
+Serve the directory that holds the runs. A `.tar.gz` of `tools/h4nb_pack.sh` in the root, or dropped onto the page, is also a run (FR-015). The name is `<archive>~<run>`. The server extracts it into `~/.cache/h4nb-viz/`.
+
+A run made with `h4nb-viz thin` (`.thin` snapshots) is listed with `thin: true`. The server reads it like a full run (FR-019).
 
 ## Prometheus
 
@@ -91,14 +93,14 @@ The page refreshes the curves of a running run every 15 s. It reads the frame li
 
 A link with `#run=<label>` opens the run whose Prometheus label is the value.
 
-Status of the manual check (T023):
+Status of the manual check (T023, 2026-11-08):
 
-- Done: the status line shows `Prometheus: on` with a stub Prometheus. It shows `off` after the stub stops. The Grafana link has its `href`. A `#run=` link with no matching label shows the no-match message. The page raises no script error in headless Chrome.
-- Open: the live update of a running run (a new point of D1 after 15 s). Open: the stop of the exporter in the stack of specs/002. Both need a running run and the Docker stack.
+- Done (stub): the status line shows `Prometheus: on` with a stub Prometheus. It shows `off` after the stub stops. The Grafana link has its `href`. A `#run=` link with no matching label shows the no-match message. The page raises no script error in headless Chrome.
+- Done (live stack of specs/002): `docker compose up` in `tools/h4nb-metrics`, `h4nb-metrics fake-run` with `--interval 1`, `h4nb-metrics serve`, then `h4nb-viz` with `--prometheus http://127.0.0.1:9090` and `--grafana http://127.0.0.1:3000`. `/api/status` had `prometheus_ok: true`. The run `live` had `in_prometheus: true`. `/series` first used the files (12 points), then Prometheus after a scrape. After `docker compose stop prometheus`, `prometheus_ok` was `false` and `/series` fell back to the files (35 points).
 
 ## Resource use
 
 - The server reads one array of a snapshot at a time. It does not load the whole snapshot.
 - The server sends at most 200 000 particles for each frame by default.
 - The page keeps at most 64 frames in memory.
-- The server writes only into the export directory.
+- The server writes only into the export directory and into `~/.cache/h4nb-viz/` (archives).

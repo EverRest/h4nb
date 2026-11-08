@@ -246,3 +246,112 @@ def test_missing_member_raises_archive_error(tmp_path):
 
     with pytest.raises(ArchiveError):
         archive.read("run9", "energy.dat")
+
+
+def test_materialize_writes_run_files(tmp_path):
+    archive = Archive(_make_archive(str(tmp_path / "logs.tar.gz")), cache_dir=str(tmp_path / "cache"))
+    dest = str(tmp_path / "out" / "run1")
+    archive.materialize("run1", dest)
+    assert open(os.path.join(dest, "config.used"), "rb").read() == b"t_end=1.0  # cli\n"
+    assert open(os.path.join(dest, "frames", "0001.snap"), "rb").read() == b"H4NBSNAP-frame-1"
+
+
+def _pack_fake_run(run_dir, archive_path, run_name="demo"):
+    """Pack a fake run in the layout of h4nb_pack.sh."""
+    root = "h4nb_logs_host_test"
+    with tarfile.open(archive_path, "w:gz") as tar:
+        for name in sorted(os.listdir(run_dir)):
+            path = os.path.join(run_dir, name)
+            if os.path.isfile(path):
+                with open(path, "rb") as f:
+                    data = f.read()
+                _add(tar, "%s/%s/%s" % (root, run_name, name), data)
+    return archive_path
+
+
+def test_run_index_lists_and_serves_archive_run(tmp_path, small_run):
+    import json
+    import threading
+    import urllib.request
+
+    from h4nb_viz.server import make_server
+
+    root = tmp_path / "root"
+    root.mkdir()
+    archive = str(root / "logs.tar.gz")
+    _pack_fake_run(small_run, archive)
+    cache = str(tmp_path / "cache")
+    web = tmp_path / "web"
+    web.mkdir()
+    (web / "index.html").write_text("<!doctype html>")
+    httpd = make_server(str(root), port=0, export_dir=str(tmp_path / "ex"), web_dir=str(web),
+                        cache_dir=cache)
+    token = httpd.app.token
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    try:
+        base = "http://127.0.0.1:%d" % httpd.server_address[1]
+
+        def get(path):
+            req = urllib.request.Request(base + path, headers={"X-H4NB-Token": token})
+            with urllib.request.urlopen(req, timeout=10) as r:
+                return r.status, r.read()
+
+        status, body = get("/api/runs")
+        runs = json.loads(body)
+        assert status == 200
+        entry = next(r for r in runs if r["run"] == "logs~demo")
+        assert entry["archive"] == "logs.tar.gz"
+        assert entry["snapshots"] == 4
+        status, body = get("/api/runs/logs~demo/frames/0?max_points=50")
+        assert status == 200 and len(body) > 40
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+
+
+def test_post_archive_upload(tmp_path, small_run):
+    import json
+    import threading
+    import urllib.request
+
+    from h4nb_viz.server import make_server
+
+    root = tmp_path / "root"
+    root.mkdir()
+    packed = str(tmp_path / "pack.tar.gz")
+    _pack_fake_run(small_run, packed)
+    with open(packed, "rb") as f:
+        data = f.read()
+    cache = str(tmp_path / "cache")
+    web = tmp_path / "web"
+    web.mkdir()
+    (web / "index.html").write_text("<!doctype html>")
+    httpd = make_server(str(root), port=0, export_dir=str(tmp_path / "ex"), web_dir=str(web),
+                        cache_dir=cache)
+    token = httpd.app.token
+    port = httpd.server_address[1]
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    try:
+        base = "http://127.0.0.1:%d" % port
+        req = urllib.request.Request(
+            base + "/api/archive?name=pack.tar.gz",
+            data=data,
+            method="POST",
+            headers={
+                "X-H4NB-Token": token,
+                "Origin": base,
+                "Content-Type": "application/octet-stream",
+                "Content-Length": str(len(data)),
+            },
+        )
+        with urllib.request.urlopen(req, timeout=10) as r:
+            body = json.loads(r.read())
+        assert body["runs"] == ["pack~demo"]
+        assert os.path.isfile(os.path.join(cache, "uploads", "pack.tar.gz"))
+        req = urllib.request.Request(base + "/api/runs", headers={"X-H4NB-Token": token})
+        with urllib.request.urlopen(req, timeout=10) as r:
+            runs = json.loads(r.read())
+        assert any(r["run"] == "pack~demo" and r["archive"] == "pack.tar.gz" for r in runs)
+    finally:
+        httpd.shutdown()
+        httpd.server_close()

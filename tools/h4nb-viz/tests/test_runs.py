@@ -68,14 +68,19 @@ def test_stale_after_minimum_is_300_seconds(tmp_path):
 
 def test_find_runs_names_and_root(fake_root):
     found = find_runs(fake_root)
-    assert found == {"eta~run1": os.path.join(fake_root, "eta", "run1"), "flat": os.path.join(fake_root, "flat")}
+    assert {n: r.path for n, r in found.items()} == {
+        "eta~run1": os.path.join(fake_root, "eta", "run1"),
+        "flat": os.path.join(fake_root, "flat"),
+    }
+    assert all(r.kind == "dir" for r in found.values())
 
 
 def test_root_run_is_named_by_its_directory(tmp_path):
     root = tmp_path / "demo"
     _write(str(root / "config.used"), "t_end=1\n")
     _write(str(root / "energy.dat"), "# time\n0\n")
-    assert find_runs(str(root)) == {"demo": str(root)}
+    found = find_runs(str(root))
+    assert {n: r.path for n, r in found.items()} == {"demo": str(root)}
 
 
 def test_run_index_rescans_at_most_every_five_seconds(tmp_path):

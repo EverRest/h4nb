@@ -1,60 +1,169 @@
 """Run discovery and run states (contracts/http-api.md, `GET /api/runs`).
 
 The states use the names and rules of specs/002 section 5. A run is a directory under the root with
-`config.used` and a snapshot or an energy table.
+`config.used` and a snapshot or an energy table. Archives of `h4nb_pack.sh` are also runs: the name
+is `<archive stem>~<subdirectory>` (FR-015).
 """
 from __future__ import annotations
 
+import hashlib
 import os
 import threading
 import time
+from dataclasses import dataclass
 from typing import Callable, Dict, Optional
 
+from .archive import Archive, ArchiveError, archive_stem, is_archive
 from .readers import parse_config_used, parse_run_info
 from .snapshots import list_frames
 from .tables import TABLE_NAMES, read_table, table_path
 
 RESCAN_SECONDS = 5.0
 STALE_MIN = 300.0  # Seconds. The minimum of the stale limit of specs/002.
+DEFAULT_CACHE_DIR = os.path.expanduser("~/.cache/h4nb-viz")
 
 
-def find_runs(root: str) -> Dict[str, str]:
-    """Return {run name: run directory} for each run under root. A run has config.used and a snapshot or an
-    energy table. The name is the path relative to root, with `/` replaced by `~`. If root is a run itself,
-    its name is its directory name, so `h4nb-viz serve DIR` shows DIR (SC-005)."""
+@dataclass(frozen=True)
+class RunRef:
+    """One discovered run. kind is "dir" or "archive"."""
+
+    kind: str
+    path: str  # Directory of the run, or path of the .tar.gz.
+    archive_run: Optional[str] = None  # Subdirectory name inside the archive.
+    archive_name: Optional[str] = None  # Basename of the archive file, for the API.
+
+
+def _has_run_data(files) -> bool:
+    return (
+        "energy.dat" in files
+        or "energy.dat.tmp" in files
+        or any(f.endswith(".snap") for f in files)
+        or any(f.endswith(".thin") for f in files)
+    )
+
+
+def find_dir_runs(root: str) -> Dict[str, RunRef]:
+    """Return {run name: RunRef} for each run directory under root."""
     root = os.path.abspath(root)
     runs = {}
     for dirpath, _dirs, files in os.walk(root):
-        if "config.used" not in files:
-            continue
-        has_data = "energy.dat" in files or "energy.dat.tmp" in files or any(f.endswith(".snap") for f in files)
-        if not has_data:
+        if "config.used" not in files or not _has_run_data(files):
             continue
         if dirpath == root:
             name = os.path.basename(root)
         else:
             name = os.path.relpath(dirpath, root).replace(os.sep, "~")
-        runs[name] = dirpath
+        runs[name] = RunRef("dir", dirpath)
     return runs
 
 
-class RunIndex:
-    """The runs of one root directory. The root is scanned at most once each RESCAN_SECONDS."""
+def _archive_paths(root: str, upload_dir: Optional[str]) -> list:
+    """Archive files in the top level of root and of the upload directory."""
+    paths = []
+    for folder in (root, upload_dir):
+        if not folder or not os.path.isdir(folder):
+            continue
+        try:
+            names = os.listdir(folder)
+        except OSError:
+            continue
+        for name in names:
+            path = os.path.join(folder, name)
+            if is_archive(path):
+                paths.append(path)
+    return paths
 
-    def __init__(self, root: str, clock: Callable[[], float] = time.monotonic):
-        self.root = root
+
+def find_archive_runs(root: str, upload_dir: Optional[str], cache_dir: str) -> Dict[str, RunRef]:
+    """Return {<stem>~<run>: RunRef} for each run with config.used inside an archive."""
+    runs = {}
+    for path in _archive_paths(root, upload_dir):
+        stem = archive_stem(path)
+        try:
+            archive = Archive(path, cache_dir=os.path.join(cache_dir, "tar"))
+            members = archive.runs()
+        except ArchiveError:
+            continue
+        for run_name, files in members.items():
+            if "config.used" not in files or not _has_run_data(files):
+                continue
+            name = "%s~%s" % (stem, run_name.replace("/", "~"))
+            runs[name] = RunRef("archive", path, archive_run=run_name, archive_name=os.path.basename(path))
+    return runs
+
+
+def find_runs(root: str, upload_dir: Optional[str] = None, cache_dir: str = DEFAULT_CACHE_DIR) -> Dict[str, RunRef]:
+    """Return {run name: RunRef} for directory runs and archive runs. Directory runs win on a name clash."""
+    found = find_archive_runs(root, upload_dir, cache_dir)
+    found.update(find_dir_runs(root))  # Directory runs overwrite archive names.
+    return found
+
+
+class RunIndex:
+    """The runs of one root directory. The root is scanned at most once each RESCAN_SECONDS.
+
+    Archive runs are extracted into cache_dir/runs/ on first access (FR-015).
+    """
+
+    def __init__(self, root: str, cache_dir: Optional[str] = None, upload_dir: Optional[str] = None,
+                 clock: Callable[[], float] = time.monotonic):
+        self.root = os.path.abspath(root)
+        self.cache_dir = os.path.abspath(cache_dir or DEFAULT_CACHE_DIR)
+        self.upload_dir = os.path.abspath(upload_dir or os.path.join(self.cache_dir, "uploads"))
         self._clock = clock
         self._lock = threading.Lock()
-        self._runs: Dict[str, str] = {}
+        self._refs: Dict[str, RunRef] = {}
+        self._resolved: Dict[str, str] = {}  # name -> materialized directory
         self._scanned_at: Optional[float] = None
 
+    def invalidate(self) -> None:
+        """Force a rescan on the next call to runs()."""
+        with self._lock:
+            self._scanned_at = None
+
+    def archive_of(self, name: str) -> Optional[str]:
+        """Basename of the archive for this run, or None for a directory run."""
+        with self._lock:
+            ref = self._refs.get(name)
+        return ref.archive_name if ref and ref.kind == "archive" else None
+
     def runs(self) -> Dict[str, str]:
+        """Return {run name: directory path}. Archive runs are materialized into the cache."""
         with self._lock:
             now = self._clock()
             if self._scanned_at is None or now - self._scanned_at >= RESCAN_SECONDS:
-                self._runs = find_runs(self.root)
+                self._refs = find_runs(self.root, self.upload_dir, self.cache_dir)
+                self._resolved = {n: p for n, p in self._resolved.items() if n in self._refs}
                 self._scanned_at = now
-            return dict(self._runs)
+            out = {}
+            for name, ref in self._refs.items():
+                out[name] = self._resolve_locked(name, ref)
+            return out
+
+    def _resolve_locked(self, name: str, ref: RunRef) -> str:
+        if ref.kind == "dir":
+            return ref.path
+        if name in self._resolved and os.path.isdir(self._resolved[name]):
+            return self._resolved[name]
+        dest = self._materialize(ref)
+        self._resolved[name] = dest
+        return dest
+
+    def _materialize(self, ref: RunRef) -> str:
+        try:
+            st = os.stat(ref.path)
+            key = hashlib.sha256(("%s|%d|%d" % (ref.path, st.st_mtime_ns, st.st_size)).encode()).hexdigest()[:16]
+        except OSError as err:
+            raise ArchiveError("cannot read archive %s: %s" % (ref.path, err)) from err
+        dest = os.path.join(self.cache_dir, "runs", key, ref.archive_run.replace("/", os.sep))
+        marker = os.path.join(dest, ".h4nb-viz-extracted")
+        if os.path.isfile(marker):
+            return dest
+        archive = Archive(ref.path, cache_dir=os.path.join(self.cache_dir, "tar"))
+        archive.materialize(ref.archive_run, dest)
+        with open(marker, "w") as f:
+            f.write("%s\n%s\n" % (ref.path, ref.archive_run))
+        return dest
 
 
 def _read_text(run_dir: str, name: str) -> str:
@@ -116,9 +225,11 @@ def run_state(run_dir: str, now: float) -> str:
     return "finished" if energy["time"][-1] >= t_end * (1 - 1e-12) else "stopped early"
 
 
-def summarize(name: str, run_dir: str, now: float, prom_label: Optional[str] = None) -> dict:
+def summarize(name: str, run_dir: str, now: float, prom_label: Optional[str] = None,
+              archive: Optional[str] = None) -> dict:
     """One entry of the run list (contracts/http-api.md `GET /api/runs`). prom_label is the run label of
-    specs/002 when Prometheus has the run, else None."""
+    specs/002 when Prometheus has the run, else None. archive is the archive basename when the run
+    comes from a pack file."""
     frames = list_frames(run_dir)
     energy = read_table(run_dir, "energy.dat")
     times = energy.get("time", ()) if energy else ()
@@ -132,8 +243,8 @@ def summarize(name: str, run_dir: str, now: float, prom_label: Optional[str] = N
         "tables": [t for t in TABLE_NAMES if table_path(run_dir, t)],
         "in_prometheus": prom_label is not None,
         "prom_label": prom_label,
-        "thin": False,
-        "archive": None,
+        "thin": bool(frames) and bool(getattr(frames[0], "thin", False)),
+        "archive": archive,
     }
 
 

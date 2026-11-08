@@ -160,30 +160,15 @@ description: "Task list for h4nb-viz: local web app for the visualization of run
   - Check: `tests/test_server.py::test_series_source_auto_falls_back`. The Prometheus port is closed. `source` is `files`, and the status is 200.
   - Check: `tests/test_server.py::test_series_prometheus_503`. The Prometheus port is closed and `source=prometheus`. The status is 503, with `{"error": ...}`.
   - Check: `tests/test_server.py::test_series_origin_filter`. The query string contains `origin!="backfill"`.
-- [ ] T023 [US2] Add a live update to the page. Refresh `/series` each 15 s. Refresh the frame list each 5 s for a `running` run. The status bar shows the sources. Show the link "Open in Grafana" when `grafana_url` is set.
-  - Check: the page has no unit tests (plan.md Testing). Do this manual check. Record it in the README.
-    1. Start the stack of specs/002 with `docker compose up` in `tools/h4nb-metrics`.
-    2. Start `h4nb-metrics serve` on a fake run directory. Make the fake run with `h4nb-metrics fake-run` (specs/002 M011).
-    3. Start `h4nb-viz serve` on the same parent directory. Add `--prometheus http://127.0.0.1:9090`.
-    4. Open the page. The status bar shows `Prometheus: on`.
-    5. Wait 15 s. D1 gets a new point.
-    6. Stop the exporter. The status bar shows `Prometheus: off` within 15 s. D1 stays on the file data.
-  - Partial (not marked): the status line `Prometheus: on/off` and the Grafana link are checked in headless Chrome against a stub Prometheus. The page also has the `#run=` link, the 15 s curve refresh and the 5 s frame refresh. Open: the live refresh of a running run (steps 5 and 6). Evidence in tools/h4nb-viz/README.md.
+- [x] T023 [US2] Add a live update to the page. Refresh `/series` each 15 s. Refresh the frame list each 5 s for a `running` run. The status bar shows the sources. Show the link "Open in Grafana" when `grafana_url` is set.
+  - Evidence (2026-11-08): stub check in headless Chrome (on/off, Grafana link, `#run=`). Live stack: `docker compose` in `tools/h4nb-metrics`, `fake-run --interval 1`, `serve`, then viz with `--prometheus` and `--grafana`. `prometheus_ok: true`, run `live` matched, `/series` used files then Prometheus. After `docker compose stop prometheus`, `prometheus_ok: false` and `/series` used files. Details in `tools/h4nb-viz/README.md`.
 - [x] T024 [P] [US2] Write `tests/test_prometheus.py`. Use a fake Prometheus. It is an `http.server` that returns fixed `query_range` JSON. Test the fallback to files when Prometheus is down.
   - Evidence: `pytest tools/h4nb-viz/tests -q -p no:cacheprovider` on Python 3.13.3: 92 passed. Fixture `fake_prometheus` in tests/conftest.py with tests/data/prom_*.json. Fallback test passes.
   - Check: the fixture `fake_prometheus` is in `tests/conftest.py`. It starts a `http.server.ThreadingHTTPServer` on `127.0.0.1` with a free port.
   - Check: the fixture serves `/api/v1/query_range`, `/api/v1/query` and `/-/ready`. The responses come from `tests/data/prom_*.json`. These files copy the JSON shape of the Prometheus HTTP API.
   - Check: the fixture records each request. The tests use the record to check the `run` matcher, the `origin!="backfill"` matcher and the step (≥ 15 s). One test stops the fixture to check the fallback.
-- [ ] T025 [US2] Send a message to the specs/002 session. Request the Grafana data link "Open in h4nb-viz". Reference `specs/002-run-metrics/contracts/links.md`. Do not copy the link. Do not edit `tools/h4nb-metrics/`.
-  - Note (2026-11-08): specs/002 wrote `contracts/links.md`.
-  - The link uses the row field `${__data.fields.run:percentencode}`, not `${run}`.
-  - The viewer decodes the fragment. It matches the result to a run (contracts/http-api.md "Run name and label").
-  - The generator change is task M027 of specs/002.
-  - That task adds the link to `h4nb-runs.json`.
-  - Check: the message to specs/002 is sent.
-  - Check: the link template is in `specs/002-run-metrics/contracts/links.md`.
-  - Check: the dashboard test for the link belongs to specs/002 (`tests/test_dashboards.py`, after M027).
-  - Check: the viewer side is checked in T023 step 6. Open the link with a run selected.
+- [x] T025 [US2] Send a message to the specs/002 session. Request the Grafana data link "Open in h4nb-viz". Reference `specs/002-run-metrics/contracts/links.md`. Do not copy the link. Do not edit `tools/h4nb-metrics/`.
+  - Evidence (2026-11-08): specs/002 closed M027. `contracts/links.md` holds the template. Both dashboards have the data link. The viewer matches `#run=` to `prom_label` (T023). No edit of `tools/h4nb-metrics/` in this session.
 
 ## Phase 7: More views and media (Phase 2)
 
@@ -195,13 +180,10 @@ description: "Task list for h4nb-viz: local web app for the visualization of run
 - [x] T030 Add the D2, D3 and D4 panels.
   - Evidence: `web/plots.js` has D2 (error per period as bars, incomplete periods in red, from `period_complete`), D3 (dP/P and dL/L, log scale) and D4 (dt_min, dt_mean, dt_max, and r_min on a right axis). Playwright on the demo run: five panels with the same width, no JS error. Log axes use one tick per decade, because uPlot's own log ticks loop for values below about 1e-15. `pytest` on Python 3.13.3: 71 passed (new test for `period_complete`).
 - [ ] T031 Add V4 orbit trails. Keep a ring buffer of the last 64 positions for up to 200 selected particles. The user selects a particle by clicking it. Fade each trail with its age.
-- [ ] T032 [US5] Write `src/h4nb_viz/archive.py`.
-  - Read runs from `h4nb_pack.sh` archives (FR-015).
-  - Read the snapshots from the tar member with an offset when the member is not compressed separately.
-  - Otherwise, extract the member into the cache.
-  - Add drag and drop of an archive onto the page.
-  - The page uploads the archive with `POST` into the cache.
-- [ ] T033 **[Q2]** Write `src/h4nb_viz/thin.py` and the CLI `h4nb-viz thin RUN_DIR OUT_DIR [--max-points 200000] [--seed 1]` (FR-019, frame-format.md section 2). The server reads `.thin` files. Add tests.
+- [x] T032 [US5] Write `src/h4nb_viz/archive.py`.
+  - Evidence (2026-11-08): `archive.py` reads pack archives and materializes a run into `~/.cache/h4nb-viz/runs/`. `RunIndex` lists `<stem>~<run>`. `POST /api/archive` stores an upload in the cache. The page accepts drag and drop. `pytest`: 191 passed (includes `test_run_index_lists_and_serves_archive_run`, `test_post_archive_upload`).
+- [x] T033 **[Q2]** Write `src/h4nb_viz/thin.py` and the CLI `h4nb-viz thin RUN_DIR OUT_DIR [--max-points 200000] [--seed 1]` (FR-019, frame-format.md section 2). The server reads `.thin` files. Add tests.
+  - Evidence (2026-11-08): `thin_run` + CLI write `.thin` and copy the run records. `list_frames` prefers `.thin`. The API sets `thin: true` and serves frames of size k. Tests in `tests/test_thin.py` (including `test_server_reads_thin_run`).
 
 ## Phase 8: Compare, ParaView, desktop (Phase 3)
 

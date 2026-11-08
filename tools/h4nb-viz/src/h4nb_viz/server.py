@@ -5,6 +5,7 @@ The page draws them. Errors are JSON objects: {"error": "<text>"}.
 """
 from __future__ import annotations
 
+import contextlib
 import hmac
 import json
 import mimetypes
@@ -12,6 +13,7 @@ from collections import Counter
 import os
 import re
 import secrets
+import tarfile
 import threading
 import time
 import traceback
@@ -23,15 +25,19 @@ from typing import Callable, Dict, List, Optional, Tuple
 import numpy as np
 
 from . import __version__, media
+from .archive import ArchiveError
 from .prometheus import NAMES, Prometheus, PromError, utc_epoch
-from .runs import RESCAN_SECONDS, RunIndex, central_id_of, detail, newest_change, start_utc_of, summarize, t_end_of
+from .runs import (DEFAULT_CACHE_DIR, RESCAN_SECONDS, RunIndex, central_id_of, detail, newest_change,
+                   start_utc_of, summarize, t_end_of)
 from .snapshots import (FIELD_MASS, FIELD_POS, FIELD_VEL, Snapshot, SubsetCache, encode_frame, encode_ids,
                         list_frames)
 from .tables import SERIES_COLUMNS, read_series
 
 
 MAX_EXPORT_BYTES = 1 << 30  # One export file can be 1 GiB at most.
+MAX_ARCHIVE_BYTES = 1 << 33  # One uploaded archive can be 8 GiB at most.
 EXPORT_EXTENSIONS = (".webm", ".mp4", ".png", ".svg")
+ARCHIVE_SUFFIXES = (".tar.gz", ".tgz", ".tar")
 WEB_DIR = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "web"))
 DEFAULT_MAX_POINTS = 200000
 FIELD_BITS = {"pos": FIELD_POS, "vel": FIELD_VEL, "mass": FIELD_MASS}
@@ -87,6 +93,38 @@ def save_export(export_dir: str, name: str, data: bytes) -> str:
     return path
 
 
+def archive_basename(name: str) -> str:
+    """Return a safe archive base name, or raise ApiError when the suffix is wrong."""
+    base = os.path.basename(name.replace("\\", "/"))
+    if not base or base in (".", "..") or "/" in base or "\\" in base:
+        raise ApiError(400, "name must be a file name")
+    lower = base.lower()
+    if not any(lower.endswith(suffix) for suffix in ARCHIVE_SUFFIXES):
+        raise ApiError(400, "name must end with one of %s" % ", ".join(ARCHIVE_SUFFIXES))
+    return base
+
+
+def save_archive(upload_dir: str, name: str, data: bytes) -> str:
+    """Write one uploaded archive into the upload directory. Overwrite a file with the same name."""
+    base = archive_basename(name)
+    if not data:
+        raise ApiError(400, "the archive is empty")
+    os.makedirs(upload_dir, exist_ok=True)
+    path = os.path.join(upload_dir, base)
+    tmp = path + ".part"
+    with open(tmp, "wb") as f:
+        f.write(data)
+    os.replace(tmp, path)
+    try:
+        with tarfile.open(path, "r:*") as tar:
+            next(iter(tar), None)
+    except (tarfile.TarError, OSError, EOFError):
+        with contextlib.suppress(OSError):
+            os.unlink(path)
+        raise ApiError(400, "the body is not a readable .tar, .tar.gz or .tgz archive")
+    return path
+
+
 def _int_param(query: Dict[str, List[str]], name: str, default: int) -> int:
     raw = query.get(name, [None])[0]
     if raw is None:
@@ -118,11 +156,12 @@ class App:
 
     def __init__(self, root: str, export_dir: Optional[str] = None, web_dir: str = WEB_DIR,
                  prometheus: Optional[str] = None, grafana_url: Optional[str] = None,
-                 clock: Callable[[], float] = time.monotonic):
+                 cache_dir: Optional[str] = None, clock: Callable[[], float] = time.monotonic):
         self.root = os.path.abspath(root)
         self.web_dir = os.path.abspath(web_dir)
         self.export_dir = export_dir or os.path.expanduser("~/h4nb-viz-exports")
-        self.runs = RunIndex(self.root)
+        self.cache_dir = os.path.abspath(cache_dir or DEFAULT_CACHE_DIR)
+        self.runs = RunIndex(self.root, cache_dir=self.cache_dir)
         self.subsets = SubsetCache()
         self.prom = Prometheus(prometheus, clock=clock) if prometheus else None
         self.grafana_url = grafana_url
@@ -139,7 +178,10 @@ class App:
         self._link_lock = threading.Lock()
 
     def run_dir(self, name: str) -> str:
-        path = self.runs.runs().get(name)
+        try:
+            path = self.runs.runs().get(name)
+        except ArchiveError as err:
+            raise ApiError(500, str(err)) from err
         if path is None:
             raise ApiError(404, "no run named %s" % name)
         return path
@@ -177,10 +219,28 @@ class App:
         return {start: label for start, label in labels.items() if counts[start] == 1}
 
     def run_list(self, now: float) -> List[dict]:
-        found = [(newest_change(path), name, path) for name, path in self.runs.runs().items()]
+        try:
+            runs = self.runs.runs()
+        except ArchiveError as err:
+            raise ApiError(500, str(err)) from err
+        found = [(newest_change(path), name, path) for name, path in runs.items()]
         found.sort(key=lambda item: -item[0])
         labels = self.matched_labels()
-        return [summarize(name, path, now, labels.get(start_utc_of(path))) for _, name, path in found]
+        return [summarize(name, path, now, labels.get(start_utc_of(path)),
+                          archive=self.runs.archive_of(name))
+                for _, name, path in found]
+
+    def store_archive(self, name: str, data: bytes) -> dict:
+        """Save an uploaded pack archive and rescan. Return the path and the new run names."""
+        path = save_archive(self.runs.upload_dir, name, data)
+        self.runs.invalidate()
+        try:
+            runs = self.runs.runs()
+        except ArchiveError as err:
+            raise ApiError(500, str(err)) from err
+        stem_runs = sorted(n for n, a in ((n, self.runs.archive_of(n)) for n in runs)
+                           if a == os.path.basename(path))
+        return {"path": path, "runs": stem_runs}
 
     def series(self, name: str, query: Dict[str, List[str]]) -> dict:
         run_dir = self.run_dir(name)
@@ -253,7 +313,13 @@ class App:
 
     def subset(self, name: str, run_dir: str, first: Snapshot, query: Dict[str, List[str]]):
         max_points = _int_param(query, "max_points", DEFAULT_MAX_POINTS)
-        seed = _int_param(query, "seed", 1)
+        # A thin run already holds the subset of the source. Use the seed of the file.
+        # max_points larger than k keeps k (contracts/frame-format.md section 2).
+        if getattr(first, "thin", False):
+            max_points = min(max_points, first.n)
+            seed = first.seed
+        else:
+            seed = _int_param(query, "seed", 1)
         return self.subsets.get(name, first, central_id_of(run_dir), max_points, seed)
 
 
@@ -344,8 +410,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def _post_route(self):
         url = urllib.parse.urlsplit(self.path)
-        if url.path != "/api/export":
-            raise ApiError(404, "no such path")
+        path = urllib.parse.unquote(url.path)
         # Only the page of this server may write. Check the origin before the body is read.
         port = self.server.server_address[1]
         if self.headers.get("Origin") not in ("http://127.0.0.1:%d" % port, "http://localhost:%d" % port):
@@ -357,27 +422,38 @@ class Handler(BaseHTTPRequestHandler):
         if not re.fullmatch(r"[0-9]+", length):
             raise ApiError(400, "Content-Length must be a number")
         size = int(length)
-        if size > MAX_EXPORT_BYTES:
-            raise ApiError(413, "the file is too large")
+        if path not in ("/api/export", "/api/archive"):
+            raise ApiError(404, "no such path")
         name = urllib.parse.parse_qs(url.query).get("name", [""])[0]
         if not name:
             raise ApiError(400, "name is required")
+        if path == "/api/archive":
+            if size > MAX_ARCHIVE_BYTES:
+                raise ApiError(413, "the file is too large")
+            data = self._read_body(size)
+            return self._json(200, self.server.app.store_archive(name, data))
+        if size > MAX_EXPORT_BYTES:
+            raise ApiError(413, "the file is too large")
+        data = self._read_body(size)
+        out = save_export(self.server.app.export_dir, name, data)
+        body = {"path": out, "mp4": False}
+        if out.endswith(".webm") and media.find_ffmpeg():
+            mp4 = save_export_path(self.server.app.export_dir, os.path.basename(out)[:-5] + ".mp4")
+            try:
+                media.to_mp4(out, mp4)
+                body = {"path": mp4, "webm": out, "mp4": True}
+            except media.FfmpegError as err:
+                body["mp4_error"] = str(err)  # Keep the WebM. Show the error.
+        self._json(200, body)
+
+    def _read_body(self, size: int) -> bytes:
         try:
             data = self.rfile.read(size)
         except OSError:  # Includes the timeout of the socket.
             raise ApiError(408, "the body did not arrive in time")
         if len(data) != size:
             raise ApiError(400, "the body is shorter than Content-Length")
-        path = save_export(self.server.app.export_dir, name, data)
-        body = {"path": path, "mp4": False}
-        if path.endswith(".webm") and media.find_ffmpeg():
-            mp4 = save_export_path(self.server.app.export_dir, os.path.basename(path)[:-5] + ".mp4")
-            try:
-                media.to_mp4(path, mp4)
-                body = {"path": mp4, "webm": path, "mp4": True}
-            except media.FfmpegError as err:
-                body["mp4_error"] = str(err)  # Keep the WebM. Show the error.
-        self._json(200, body)
+        return data
 
     def _use_link(self, app: App, given: str) -> bool:
         """Accept the link token once. Return False for a wrong token or a token that was used."""
@@ -432,16 +508,19 @@ class Handler(BaseHTTPRequestHandler):
 
 def make_server(root: str, port: int = 8820, export_dir: Optional[str] = None, web_dir: str = WEB_DIR,
                 prometheus: Optional[str] = None, grafana_url: Optional[str] = None,
+                cache_dir: Optional[str] = None,
                 clock: Callable[[], float] = time.monotonic) -> ThreadingHTTPServer:
     """Return a server bound to 127.0.0.1. Use port 0 to get a free port."""
     httpd = ThreadingHTTPServer(("127.0.0.1", port), Handler)
-    httpd.app = App(root, export_dir, web_dir, prometheus, grafana_url, clock)
+    httpd.app = App(root, export_dir, web_dir, prometheus, grafana_url, cache_dir, clock)
     return httpd
 
 
 def serve(root: str, port: int = 8820, export_dir: Optional[str] = None, open_browser: bool = True,
-          prometheus: Optional[str] = None, grafana_url: Optional[str] = None) -> None:
-    httpd = make_server(root, port, export_dir, prometheus=prometheus, grafana_url=grafana_url)
+          prometheus: Optional[str] = None, grafana_url: Optional[str] = None,
+          cache_dir: Optional[str] = None) -> None:
+    httpd = make_server(root, port, export_dir, prometheus=prometheus, grafana_url=grafana_url,
+                        cache_dir=cache_dir)
     url = "http://127.0.0.1:%d/?token=%s" % (httpd.server_address[1], httpd.app.link_token)
     print("h4nb-viz: serving %s. Open this link (Ctrl+C stops the server):\n  %s" % (httpd.app.root, url), flush=True)
     if open_browser:

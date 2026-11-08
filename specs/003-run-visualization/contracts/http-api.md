@@ -137,6 +137,16 @@ The response is `{"path": "...", "mp4": true}`.
 
 Only the page origin may call this endpoint. The server checks the `Origin` header.
 
+## `POST /api/archive` (Phase 2, FR-015)
+
+The body is a `.tar`, `.tar.gz` or `.tgz` archive of `tools/h4nb_pack.sh`.
+
+The query takes `name=<file name>` (the suffix must match).
+
+The server writes the file into `~/.cache/h4nb-viz/uploads/` (or the cache directory of the server). It does not write into the run root. It then scans the archive. The response is `{"path": "...", "runs": ["<stem>~<run>", ...]}`.
+
+Only the page origin may call this endpoint. The server checks the `Origin` header. The page uses this endpoint for drag and drop of an archive.
+
 ## `POST /api/runs/{run}/paraview` (Phase 3)
 
 Writes `.pvd` + `.vtp` into the export directory. Response `{"path": ".../run1.pvd", "frames": 101}`.
