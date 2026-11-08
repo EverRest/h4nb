@@ -71,7 +71,7 @@ description: "Task list for h4nb-viz: local web app for the visualization of run
 
 ## Phase 5: Accuracy and speed plots (P1) 🎯 MVP
 
-- [ ] T019 [US1] `web/plots.js`: uPlot panels D1 (energy error, log y, W_diss as a second series) and D5 (pairs/s, progress) from `/series`; tooltip with the `origin` of each series (FR-014); the time cursor of the 3D view as a vertical line; a click on a plot moves the 3D view to the nearest frame.
+- [ ] T019 [US1] `web/plots.js`: uPlot panels D1 (energy error, log y, W_diss as a second series) and D5 (pairs/s, progress) from `/series`; tooltip with the `metric` of each series (FR-014); the time cursor of the 3D view as a vertical line; a click on a plot moves the 3D view to the nearest frame.
 - [ ] T020 [US1] `tools/h4nb-viz/README.md` (STE): install (`pip install -e tools/h4nb-viz`), the three commands of SC-005, keys, where the exports go, how to copy snapshots from the GPU machine (`rsync`, `make pack --snap`), resource use. Add one line for h4nb-viz to the documentation index (`README.md` tools list).
 
 **Checkpoint**: MVP done. Demo on a fake run with N = 1 048 577 (check SC-003) and N = 20 000.
@@ -80,11 +80,34 @@ description: "Task list for h4nb-viz: local web app for the visualization of run
 
 ## Phase 6: User Story 2 - Live run with data from Grafana (P1, Phase 2)
 
-- [ ] T021 [US2] `src/h4nb_viz/prometheus.py`: `query_range` with `urllib` (research.md R6), join with `h4nb_sim_time`, name table of contracts/http-api.md; `--prometheus URL` and `--grafana URL` options; `prometheus_ok` in `/api/status`.
-- [ ] T022 [US2] `/series?source=auto|prometheus|files`; mark `in_prometheus` in `/api/runs` (query `h4nb_run_info{run=...}` once per rescan).
+- [ ] T021 [US2] `src/h4nb_viz/prometheus.py`: `query_range` with `urllib` (research.md R6), join with `h4nb_sim_time`, name table of contracts/http-api.md; `--prometheus URL` and `--grafana URL` options; `prometheus_ok` in `/api/status` (`GET <url>/-/ready`, contracts/http-api.md).
+  - Check: `tests/test_prometheus.py::test_names_match_002_contract`. The test reads the Prometheus names in the table of research.md R6. It fails if a name is not in `specs/002-run-metrics/contracts/metrics.md`. The comparison uses full names, with `_total` for counters.
+  - Check: `tests/test_prometheus.py::test_query_range_joins_sim_time`. The test checks that each returned series has the x values of `h4nb_sim_time`. It uses the fixture `fake_prometheus` of T024.
+- [ ] T022 [US2] `/series?source=auto|prometheus|files`; mark `in_prometheus` in `/api/runs` (query `h4nb_run_info` without a selector, match by `start_utc`, set `prom_label`; contracts/http-api.md "Run name and label").
+  - Check: `tests/test_server.py::test_runs_in_prometheus`. The fake Prometheus returns one `h4nb_run_info` series with label `run="eta/run1"`. Its `start_utc` equals the value in the `run_info.txt` of the run `eta~run1`. Then `prom_label` of `eta~run1` is `eta/run1`, and `in_prometheus` is `true`.
+  - Check: `tests/test_server.py::test_run_without_match`. A run with another `start_utc` has `prom_label` = `null`.
+  - Check: `tests/test_server.py::test_backfill_only_run_not_in_prometheus`. The fake Prometheus returns only a series with `origin="backfill"`. The run has `in_prometheus` = `false`.
+  - Check: `tests/test_server.py::test_series_source_auto_falls_back`. The Prometheus port is closed. `source` is `files`, and the status is 200.
+  - Check: `tests/test_server.py::test_series_prometheus_503`. The Prometheus port is closed and `source=prometheus`. The status is 503, with `{"error": ...}`.
+  - Check: `tests/test_server.py::test_series_origin_filter`. The query string contains `origin!="backfill"`.
 - [ ] T023 [US2] Live update in the page: refresh `/series` each 15 s and the frame list each 5 s for a `running` run; status bar shows the sources; link "Open in Grafana" when `grafana_url` is set.
+  - Check: the page has no unit tests (plan.md Testing). Manual check, recorded in the README:
+    1. Start the stack of specs/002 (`docker compose up` in `tools/h4nb-metrics`).
+    2. Start `h4nb-metrics serve` on a fake run directory from `h4nb-metrics fake-run` (specs/002 M011).
+    3. Start `h4nb-viz serve` on the same parent directory with `--prometheus http://127.0.0.1:9090`.
+    4. Open the page. The status bar shows `Prometheus: on`.
+    5. Wait for 15 s. D1 gets a new point.
+    6. Stop the exporter. The status bar shows `Prometheus: off` within 15 s. D1 stays on the file data.
 - [ ] T024 [P] [US2] Tests: `tests/test_prometheus.py` with a fake Prometheus (`http.server` that returns fixed `query_range` JSON); fallback to files when it is down.
-- [ ] T025 [US2] Send a message to the specs/002 session: request the Grafana data link "Open in h4nb-viz" (`http://127.0.0.1:8820/#run=${run}`). Do not edit `tools/h4nb-metrics/`.
+  - Check: the fixture `fake_prometheus` is in `tests/conftest.py`. It starts a `http.server.ThreadingHTTPServer` on `127.0.0.1` with a free port.
+  - Check: the fixture serves `/api/v1/query_range`, `/api/v1/query` and `/-/ready`. The responses come from `tests/data/prom_*.json`. These files copy the JSON shape of the Prometheus HTTP API.
+  - Check: the fixture records each request. Tests use the record to check the `run` matcher, the `origin!="backfill"` matcher and the step (≥ 15 s). A test also stops the fixture to check the fallback.
+- [ ] T025 [US2] Send a message to the specs/002 session: request the Grafana data link "Open in h4nb-viz". The link is defined in `specs/002-run-metrics/contracts/links.md`; reference it, do not copy it. Do not edit `tools/h4nb-metrics/`.
+  - Note (2026-11-08): specs/002 wrote `contracts/links.md`. The link uses the row field `${__data.fields.run:percentencode}`, not `${run}`. The viewer decodes the fragment. It matches the result to a run (contracts/http-api.md "Run name and label"). The generator change is task M027 of specs/002. That task adds the link to `h4nb-runs.json`.
+  - Check: the message to specs/002 is sent.
+  - Check: the link template is in `specs/002-run-metrics/contracts/links.md`.
+  - Check: the dashboard test for the link belongs to specs/002 (`tests/test_dashboards.py`, after M027).
+  - Check: the viewer side is checked in T023 step 6. Open the link with a run selected.
 
 ## Phase 7: More views and media (Phase 2)
 
@@ -111,6 +134,7 @@ description: "Task list for h4nb-viz: local web app for the visualization of run
 
 - Phase 1 → Phase 2 → Phases 3, 4, 5 (MVP; 3 before 4 and 5 in one session, or in parallel by different agents: T010–T014 page, T015–T018 export, T019 plots).
 - Phase 6 needs specs/002 on `main` (metric names) and T008.
+- T021 and T022 use the fixture `fake_prometheus` of T024. Write T024 first, even though T024 is marked [P].
 - Phase 7 and 8 need the MVP.
 
 ## Parallel work for agents

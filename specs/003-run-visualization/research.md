@@ -32,9 +32,50 @@
 
 ## R6 Prometheus queries
 
-- **Decision**: `GET /api/v1/query_range?query=<metric>{run="<run>"}&start&end&step`, `step` = max(15 s, range/2000). `urllib` from the stdlib.
+- **Decision**: `GET /api/v1/query_range?query=<expr>&start=<s>&end=<s>&step=<s>`, `step` = max(15 s, range/2000). `urllib` from the stdlib. The `<expr>` is a metric name from the table below with the selector `{run="<label>",origin!="backfill"}`.
 - **Reason**: no client library. 2000 points per curve is enough for a plot.
-- **Note**: Prometheus stores wall time. The page plots against simulation time, so the server also queries `h4nb_sim_time` and joins the two series on the timestamp.
+- **Note**: Prometheus stores wall time. The page plots against simulation time. The server queries `h4nb_sim_time{run="<label>",origin!="backfill"}` too. It joins each series with it on the step timestamp of the response. Both series use the same step grid, so the join pairs the points that have the same timestamp.
+
+### Metric name table (checked 2026-11-08)
+
+Source of the names: `specs/002-run-metrics/contracts/metrics.md`. Checked against the prototype in `tools/h4nb-metrics/src/h4nb_metrics/metrics.py` and the dashboard queries in `tools/h4nb-metrics/grafana/build_dashboards.py`. The prototype and the contract use the same names. A counter has the suffix `_total` in Prometheus. The prototype stores the name without it, and the client library adds it.
+
+All metrics have the label `run`. The value of `run` is the run label of specs/002 (see the run name rule in contracts/http-api.md).
+
+| h4nb-viz name | Prometheus metric | Type | Extra labels | Used by |
+|---|---|---|---|---|
+| `sim_time` | `h4nb_sim_time` | gauge | - | join key of all series; D1, D5 |
+| `t_end` | `h4nb_t_end` | gauge | - | run card, progress |
+| `progress_ratio` | `h4nb_progress_ratio` | gauge | - | D5 |
+| `eta_seconds` | `h4nb_eta_seconds` | gauge | - | D5 |
+| `run_state` | `h4nb_run_state` | gauge | - | `/api/runs` state (0 running, 1 finished, 2 stopped early, 3 stalled) |
+| `run_info` | `h4nb_run_info` | gauge, value 1 | `host`, `commit`, `build_type`, `gpu`, `ranks`, `mpi`, `start_utc`, `preset` | `in_prometheus`, run card |
+| `particles` | `h4nb_particles` | gauge | - | run card, `n` |
+| `wall_seconds` | `h4nb_wall_seconds_total` | counter | - | run card |
+| `energy_rel_err` | `h4nb_energy_rel_err` | gauge | - | D1 |
+| `energy_max_rel_err` | `h4nb_energy_max_rel_err` | gauge | - | run card |
+| `energy_mean_rel_err` | `h4nb_energy_mean_rel_err` | gauge | - | D1 (optional line) |
+| `energy_total` | `h4nb_energy_total` | gauge | - | not used in MVP |
+| `dissipated_work` | `h4nb_dissipated_work` | gauge | - | D1 (second series) |
+| `momentum_rel_change` | `h4nb_momentum_rel_change` | gauge | - | D3 |
+| `angular_momentum_rel_change` | `h4nb_angular_momentum_rel_change` | gauge | - | D3 |
+| `period_max_rel_err` | `h4nb_period_max_rel_err` | gauge | `period` | D2 |
+| `dt_min` | `h4nb_dt_min` | gauge | - | D4 |
+| `dt_mean` | `h4nb_dt_mean` | gauge | - | D4 |
+| `dt_max` | `h4nb_dt_max` | gauge | - | D4 |
+| `r_min` | `h4nb_r_min` | gauge | - | D4 |
+| `active_per_block_step` | `h4nb_active_per_block_step` | gauge | - | D5 |
+| `pairs_per_second` | `h4nb_pairs_per_second` | gauge | - | D5 |
+| `gflops` | `h4nb_gflops` | gauge | - | run card (not a D plot) |
+| `particle_updates_per_second` | `h4nb_particle_updates_per_second` | gauge | - | not used in MVP |
+| `segment_wall_seconds` | `h4nb_segment_wall_seconds` | gauge | - | live update interval (T023) |
+| `block_steps_total` | `h4nb_block_steps_total` | counter | - | not used in MVP |
+| `active_updates_total` | `h4nb_active_updates_total` | counter | - | not used in MVP |
+| `config_value` | `h4nb_config_value` | gauge | `key` | `eta`, `eps`, `energy_tol` (not a series) |
+| `run_start_timestamp_seconds` | `h4nb_run_start_timestamp_seconds` | gauge | - | run card (`start_utc`) |
+| `run_end_timestamp_seconds` | `h4nb_run_end_timestamp_seconds` | gauge | - | not used in MVP |
+
+Backfilled samples have the extra label `origin="backfill"` (specs/002 FR-017). Every query in this file uses the matcher `origin!="backfill"` (decision OQ-2, contracts/http-api.md).
 
 ## R7 Orbital elements
 

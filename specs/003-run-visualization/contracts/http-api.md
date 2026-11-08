@@ -18,6 +18,8 @@ The server listens on `127.0.0.1:<port>` (default 8820). All endpoints are `GET`
  "ffmpeg": true, "grafana_url": "http://127.0.0.1:3000"}
 ```
 
+`prometheus_ok` is `true` when `GET <prometheus>/-/ready` returns HTTP 200 within 1 s. The server checks it at most once each 15 s. It is `false` when `--prometheus` is not set.
+
 ## `GET /api/runs`
 
 A list of runs, newest `mtime` first.
@@ -25,10 +27,30 @@ A list of runs, newest `mtime` first.
 ```json
 [{"run": "eta~run1", "state": "finished", "n": 131073, "t_end": 6.3125, "sim_time": 6.3125,
   "snapshots": 101, "tables": ["energy", "momentum", "timesteps", "performance", "energy_periods"],
-  "in_prometheus": true, "thin": false, "archive": null}]
+  "in_prometheus": true, "prom_label": "eta/run1", "thin": false, "archive": null}]
 ```
 
-`state` is one of `running` (files changed in the last `stale_after` = 600 s and no `snap_final.snap`), `finished` (`snap_final.snap` or `sim_time` ≥ `t_end`), `stopped` (only `*.dat.tmp` and no change for `stale_after`), `unknown`.
+`state` uses the names of specs/002 (`contracts/metrics.md` section 5). It is one of:
+
+| `state` | Condition (same as specs/002 `h4nb_run_state`) |
+|---|---|
+| `running` | `energy.dat.tmp` exists and the newest change is at most `stale_after` ago. |
+| `finished` | `energy.dat` exists and its last `time` ≥ `t_end` × (1 − 1e-12). |
+| `stopped early` | `energy.dat` exists and its last `time` < `t_end`. |
+| `stalled` | `energy.dat.tmp` exists and the newest change is more than `stale_after` ago. |
+| `unknown` | 003 only. No `energy.dat` or `energy.dat.tmp` exists. specs/002 does not expose this state. |
+
+`stale_after` = max(300 s, 5 × the largest `wall_s` of the last 10 rows of `performance.dat`). This is the rule of specs/002.
+
+The rescan runs each 5 s. The Prometheus query runs at most once each 15 s.
+
+The query is `h4nb_run_info{origin!="backfill"}`. A backfilled run does not match.
+
+Each series has a `run` label (the 002 label) and a `start_utc` label. The server matches a local run to a series with the same `start_utc` value. It reads that value from the run's `run_info.txt`.
+
+A run without a `run_info.txt` has no match. A matched run gets `prom_label` = the `run` label of that series. `in_prometheus` is `true` when a match exists.
+
+When Prometheus is not reachable, `in_prometheus` is `false` and `prom_label` is `null`.
 
 ## `GET /api/runs/{run}`
 
@@ -66,17 +88,21 @@ The curves for the D panels.
 ```json
 {"source": "prometheus", "x": "time",
  "series": {"energy_rel_err": {"x": [0.0, 0.0625], "y": [0.0, 1.2e-10], "unit": "1",
-            "origin": "h4nb_energy_rel_err"}}}
+            "metric": "h4nb_energy_rel_err"}}}
 ```
 
 - `source`: `auto` (Prometheus when the run has `in_prometheus` and Prometheus is reachable, else `files`), `prometheus`, `files`.
-- `x` is always the simulation time. For Prometheus, the server joins each metric with `h4nb_sim_time` on the sample timestamp (research.md R6).
-- `origin` is the metric name or `file:column` (for example `energy.dat:rel_err`). The page shows it in the tooltip (spec FR-014).
+- `x` is the simulation time (`"time"`) for all names except `period_max_rel_err`. For that name, `x` is `"period"` and `x` holds the period numbers.
+- For Prometheus, the server joins each metric with `h4nb_sim_time` on the sample timestamp (research.md R6). The join uses the same `origin!="backfill"` matcher as the metric.
+- `metric` is the metric name or `file:column` (for example `energy.dat:rel_err`). The page shows it in the tooltip (spec FR-014).
 
-Name table (one table in `prometheus.py` and `tables.py`):
+Prometheus queries use the selector `{run="<label>",origin!="backfill"}`. Backfilled samples never reach the D plots (OQ-2, resolved). A run that is only backfilled has no Prometheus series for the D plots. Its curves come from files.
+
+Name table (one table in `prometheus.py` and `tables.py`). The Prometheus column uses the names of research.md R6.
 
 | Name | Prometheus | File column |
 |---|---|---|
+| `sim_time` | `h4nb_sim_time` | `energy.dat:time` (join key, not plotted alone) |
 | `energy_rel_err` | `h4nb_energy_rel_err` | `energy.dat:rel_err` |
 | `dissipated_work` | `h4nb_dissipated_work` | `energy.dat:W_diss` |
 | `momentum_rel_change` | `h4nb_momentum_rel_change` | `momentum.dat:dP_rel` |
@@ -85,6 +111,7 @@ Name table (one table in `prometheus.py` and `tables.py`):
 | `pairs_per_second` | `h4nb_pairs_per_second` | `performance.dat:pairs_per_s` |
 | `active_per_block_step` | `h4nb_active_per_block_step` | `timesteps.dat:mean_active_per_block_step` |
 | `progress_ratio` | `h4nb_progress_ratio` | `energy.dat:time` / `t_end` |
+| `eta_seconds` | `h4nb_eta_seconds` | none: the server computes it with the rule of specs/002 section 6 |
 | `period_max_rel_err` | `h4nb_period_max_rel_err` | `energy_periods.dat:max_rel_err` (x = `period`) |
 
 `bench.dat` and `study.dat` are files only: `GET /api/runs/{run}/table/{name}` returns `{"columns": [...], "rows": [[...]]}`.
@@ -102,3 +129,29 @@ Writes `.pvd` + `.vtp` into the export directory. Response `{"path": ".../run1.p
 - `127.0.0.1` only. No CORS headers. `POST` needs `Origin` equal to the server origin.
 - The server serves files only from `web/`. It never serves a path from the request in a run directory.
 - `{run}` must be in the current run list; else 404.
+
+## Run name and label
+
+`{run}` is the 003 name: the directory path relative to the root, with `/` replaced by `~`. The Prometheus label is the run label of specs/002. The two can differ. The specs/002 label is a relative path (see specs/002 `spec.md`, Key Entities). The server keeps both: the 003 name for URLs and the 002 label for queries.
+
+The Grafana link of specs/002 sends the 002 label in the URL fragment. The link is defined in `specs/002-run-metrics/contracts/links.md`. This file does not copy it.
+
+The page decodes the percent-encoded fragment value first. Then it matches the whole value with the field `prom_label` of the run in `/api/runs`. It does not match the last part of the label. Two runs can share a last part, for example `eta/run1` and `scan/run1`.
+
+Hash rule: the fragment is `#run=<label>`. The page reads the text after `run=` and applies `decodeURIComponent` once. The page compares the result with `prom_label` of each run in `/api/runs`, exactly, with no trimming and no case change.
+
+Match rule:
+- Exactly one run has `prom_label` equal to the decoded value: the page selects that run and opens its time range.
+- No run matches: the page selects no run and shows the message "No run with label VALUE in this root directory. Check the root directory of h4nb-viz." VALUE is the decoded fragment. The page does not guess a run from the last part of the label.
+- Two or more runs match (not expected, because `prom_label` values come from unique Prometheus labels): the page selects none and shows "Several runs match VALUE."
+- The page does not use the 003 name (`~` form) for this match.
+
+`prom_label` is the `run` label of the `h4nb_run_info` series that matches the run. The server takes it from the Prometheus response at each rescan. It is `null` when no series matches. A run with `prom_label` = `null` does not match any fragment. `in_prometheus` is `true` when `prom_label` is not `null`.
+
+## Open questions
+
+Resolved by Pavlo (2026-11-08):
+
+- OQ-1: The JSON key for the metric name is `metric`. The name `origin` stays for the Prometheus label only (specs/002 FR-017).
+- OQ-2: The D plots show no backfilled series. Queries use `origin!="backfill"`.
+- OQ-3: The `state` values are the names of specs/002 (`running`, `finished`, `stopped early`, `stalled`, `unknown`). The `stale_after` rule is the rule of specs/002.
