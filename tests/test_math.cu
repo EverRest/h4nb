@@ -1,6 +1,8 @@
 // Unit tests for the per-particle Hermite math (src/hermite.cuh). Host only, no GPU needed.
 #include <cmath>
 #include <cstdio>
+#include <random>
+#include <vector>
 #include "check.hpp"
 #include "hermite.cuh"
 
@@ -104,6 +106,16 @@ static void test_update_particle() {
   const d4 nanv{std::nan(""), 0, 0, 0};
   unsigned sn = update_particle(p, false, nanv, j1, 4.0, x, v, a, j, t, next, lv);
   CHECK(sn & kNaN);
+
+  // NaN step estimate (0/0 in the corrector with no force, issue A3): keep the current level 5. Do not go coarser.
+  // No force is normal, so there is no status bit.
+  Config cb = c;
+  cb.mode = StepMode::Block;
+  StepParams pn = make_params(cb, tick, 1024, false);
+  d4 an = z, jn = z;
+  lv = 5;
+  unsigned sa3 = update_particle(pn, false, z, z, 4.0, x, v, an, jn, t, next, lv);
+  CHECK(lv == 5 && sa3 == 0);
 
   // Close pair: r^2min below r2_close sets kClosePair.
   Config cc = c;
@@ -269,7 +281,54 @@ static void test_make_params() {
   CHECK(make_params(e, 1.0, 0, false).eta_init == 0.005);
 }
 
+// Independent check of the pair force (W6). The reference is written from the textbook formulas in long double,
+// not from accumulate(). It checks a and j for 16 random particles with softening. This test catches a wrong formula,
+// which a GPU-vs-CPU comparison with the same code would not catch.
+static void test_force_independent_longdouble() {
+  std::mt19937 rng(12345);
+  std::uniform_real_distribution<double> u(-1.0, 1.0);
+  const int n = 16;
+  const double eps2 = 0.01;
+  std::vector<h4nb::d4> x(n), v(n);
+  for (int i = 0; i < n; ++i) {
+    x[i] = h4nb::d4{u(rng), u(rng), u(rng), 0.5 + 0.5 * (u(rng) + 1.0)};
+    v[i] = h4nb::d4{0.3 * u(rng), 0.3 * u(rng), 0.3 * u(rng), 0.0};
+  }
+  for (int i = 0; i < n; ++i) {
+    h4nb::AJ f;
+    long double ax = 0, ay = 0, az = 0, jx = 0, jy = 0, jz = 0;
+    for (int j = 0; j < n; ++j) {
+      if (j == i) continue;
+      h4nb::accumulate(f, x[i], v[i], x[j], v[j], eps2);
+      // Reference: r = xj - xi, dv = vj - vi, R2 = r.r + eps2, m = mass of j.
+      const long double rx = (long double)x[j].x - x[i].x, ry = (long double)x[j].y - x[i].y,
+                        rz = (long double)x[j].z - x[i].z;
+      const long double dvx = (long double)v[j].x - v[i].x, dvy = (long double)v[j].y - v[i].y,
+                        dvz = (long double)v[j].z - v[i].z;
+      const long double R2 = rx * rx + ry * ry + rz * rz + eps2;
+      const long double R3 = R2 * sqrtl(R2);
+      const long double m = x[j].w;
+      const long double rdv = rx * dvx + ry * dvy + rz * dvz;
+      ax += m * rx / R3;
+      ay += m * ry / R3;
+      az += m * rz / R3;
+      jx += m * (dvx / R3 - 3.0L * rdv * rx / (R3 * R2));
+      jy += m * (dvy / R3 - 3.0L * rdv * ry / (R3 * R2));
+      jz += m * (dvz / R3 - 3.0L * rdv * rz / (R3 * R2));
+    }
+    const double sc = std::fabs((double)ax) + std::fabs((double)ay) + std::fabs((double)az);
+    const double sj = std::fabs((double)jx) + std::fabs((double)jy) + std::fabs((double)jz);
+    CHECK_NEAR(f.ax, (double)ax, 1e-12 * sc);
+    CHECK_NEAR(f.ay, (double)ay, 1e-12 * sc);
+    CHECK_NEAR(f.az, (double)az, 1e-12 * sc);
+    CHECK_NEAR(f.jx, (double)jx, 1e-12 * sj);
+    CHECK_NEAR(f.jy, (double)jy, 1e-12 * sj);
+    CHECK_NEAR(f.jz, (double)jz, 1e-12 * sj);
+  }
+}
+
 int main() {
+  test_force_independent_longdouble();
   test_predict();
   test_correct_exact_quadratic();
   test_aarseth();
