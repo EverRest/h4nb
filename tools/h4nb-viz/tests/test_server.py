@@ -10,6 +10,7 @@ import urllib.request
 import numpy as np
 import pytest
 
+from h4nb_viz import server as h4nb_viz_server
 from h4nb_viz.server import json_list, make_server
 from h4nb_viz.fake import write_fake_run
 from h4nb_viz.snapshots import FRAME_HEADER, FRAME_MAGIC
@@ -403,6 +404,48 @@ def test_index_page_carries_the_token_and_needs_none(server):
 def test_static_files_need_no_token(server):
     base, _ = server
     assert get(base, "/web/app.js", token="")[0] == 200
+
+
+def raw_post(port, path, length_header, body=b"", origin=True):
+    """Send a POST with a given Content-Length header, without the helpers. Return (status, body)."""
+    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=3)
+    conn.putrequest("POST", path, skip_accept_encoding=True)
+    conn.putheader("Host", "127.0.0.1:%d" % port)
+    if origin:
+        conn.putheader("Origin", "http://127.0.0.1:%d" % port)
+    conn.putheader("X-H4NB-Token", _TOKEN["value"])
+    conn.putheader("Content-Length", length_header)
+    conn.endheaders(body)
+    response = conn.getresponse()
+    data = response.read()
+    conn.close()
+    return response.status, data
+
+
+def test_content_length_must_be_a_number(server):
+    base, httpd = server
+    status, body = raw_post(httpd.server_address[1], "/api/export?name=a.png", "abc", b"1")
+    assert status == 400 and b"error" in body
+
+
+def test_negative_content_length_is_refused(server):
+    base, httpd = server
+    status, body = raw_post(httpd.server_address[1], "/api/export?name=a.png", "-5", b"1")
+    assert status == 400 and b"error" in body
+
+
+def test_content_length_above_limit_is_refused_before_reading(server, monkeypatch):
+    base, httpd = server
+    monkeypatch.setattr(h4nb_viz_server, "MAX_EXPORT_BYTES", 10)
+    status, body = raw_post(httpd.server_address[1], "/api/export?name=a.png", "20", b"x" * 20)
+    assert status == 413 and b"error" in body
+
+
+def test_body_shorter_than_length_times_out_with_408(server, monkeypatch):
+    base, httpd = server
+    monkeypatch.setattr(h4nb_viz_server.Handler, "timeout", 1)
+    status, body = raw_post(httpd.server_address[1], "/api/export?name=a.png", "20", b"x" * 5)
+    assert status == 408 and b"error" in body
 
 
 def test_percent_encoded_api_path_needs_the_token(server):

@@ -233,6 +233,7 @@ class App:
 
 class Handler(BaseHTTPRequestHandler):
     server_version = "h4nb-viz"
+    timeout = 30  # Seconds to wait for each read. A request body that stops early gives 408.
 
     def log_message(self, format, *args):  # Keep the terminal quiet. Errors go to the status line.
         pass
@@ -318,12 +319,21 @@ class Handler(BaseHTTPRequestHandler):
         length = self.headers.get("Content-Length")
         if length is None:
             raise ApiError(411, "Content-Length is required")
-        if int(length) > MAX_EXPORT_BYTES:
+        # Digits only. A negative or odd value would make read() wait for the connection to close.
+        if not re.fullmatch(r"[0-9]+", length):
+            raise ApiError(400, "Content-Length must be a number")
+        size = int(length)
+        if size > MAX_EXPORT_BYTES:
             raise ApiError(413, "the file is too large")
         name = urllib.parse.parse_qs(url.query).get("name", [""])[0]
         if not name:
             raise ApiError(400, "name is required")
-        data = self.rfile.read(int(length))
+        try:
+            data = self.rfile.read(size)
+        except OSError:  # Includes the timeout of the socket.
+            raise ApiError(408, "the body did not arrive in time")
+        if len(data) != size:
+            raise ApiError(400, "the body is shorter than Content-Length")
         path = save_export(self.server.app.export_dir, name, data)
         self._json(200, {"path": path, "mp4": False})  # MP4 conversion is added in T026.
 
