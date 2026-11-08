@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "h4nb-metrics"
+version = "0.1.0"
+description = "Prometheus exporter and Grafana dashboards for the output files of h4nb_run. Reads files only."
+readme = "README.md"
+requires-python = ">=3.8"
+license = { text = "See LICENSE in the repository root" }
+dependencies = ["prometheus_client>=0.12"]
+
+[project.optional-dependencies]
+# The tests parse OpenMetrics. Older parsers compare fractional time stamps wrongly.
+test = ["pytest>=7", "prometheus_client>=0.21"]
+
+[project.scripts]
+h4nb-metrics = "h4nb_metrics.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

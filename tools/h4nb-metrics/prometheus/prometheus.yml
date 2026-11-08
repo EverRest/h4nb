@@ -1,0 +1,8 @@
+# Prometheus scrapes h4nb-metrics serve on the host (port 9810).
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+scrape_configs:
+  - job_name: h4nb
+    static_configs:
+      - targets: ["host.docker.internal:9810"]

@@ -1,0 +1,23 @@
+# Linux override: Docker on Linux cannot reach an exporter that listens on 127.0.0.1 of the host through
+# host.docker.internal. With this file, Prometheus and Grafana use the network of the host. They still listen on
+# 127.0.0.1 only (FR-020).
+# Use: docker compose -f docker-compose.yml -f docker-compose.linux.yml up -d
+services:
+  prometheus:
+    network_mode: host
+    ports: !reset []
+    extra_hosts: !reset []
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=5y
+      - --web.enable-lifecycle
+      - --web.listen-address=127.0.0.1:9090
+    volumes:
+      - ./prometheus/prometheus-linux.yml:/etc/prometheus/prometheus.yml:ro
+  grafana:
+    network_mode: host
+    ports: !reset []
+    environment:
+      GF_SERVER_HTTP_ADDR: 127.0.0.1
+      PROMETHEUS_URL: http://127.0.0.1:9090
