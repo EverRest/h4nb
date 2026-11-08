@@ -103,6 +103,22 @@ def test_particles_from_snapshot_without_key_n(tmp_path):
     assert r.particles == 77
 
 
+def test_particles_from_ic_snapshot_when_no_snap_files(tmp_path):
+    import random
+    from h4nb_metrics.fakerun import write_snapshot
+    make_run(tmp_path / "r", snap_n=77)
+    d = tmp_path / "r"
+    for f in d.glob("snap_*.snap"):
+        f.unlink()
+    write_snapshot(str(d / "init.snap"), 77, 0.0, random.Random(1))
+    p = d / "config.used"
+    lines = [l for l in p.read_text().splitlines(True) if not l.startswith(("n=", "ic="))]
+    p.write_text("".join(lines) + "ic=init.snap  # cli\n")
+    r = Run("r", DirSource(str(d)))
+    r.update()
+    assert r.particles == 77
+
+
 def test_discovery_labels_and_new_runs(tmp_path):
     make_run(tmp_path / "a" / "run1")
     make_run(tmp_path / "b" / "run1")
