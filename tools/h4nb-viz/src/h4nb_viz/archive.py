@@ -1,18 +1,30 @@
 """Runs inside the archives of tools/h4nb_pack.sh (FR-015).
 
 Layout: <root>/<run>/<file>, <root>/MANIFEST.txt and <root>/slurm/<file>. The run name is the directory
-name under <root>. The Slurm logs form the run `slurm`. The archive is read in place, not unpacked.
+name under <root>. The Slurm logs form the run `slurm`. A plain member is streamed from the archive. A
+member with a .gz, .bz2 or .xz suffix is decompressed once into cache_dir.
 """
 from __future__ import annotations
 
+import bz2
+import contextlib
+import gzip
 import hashlib
+import lzma
 import os
 import tarfile
+import tempfile
 import threading
 import zlib
-from typing import Dict, List, Tuple
+from typing import Callable, Dict, List, Tuple
 
-COMPRESSED = (".gz", ".bz2", ".xz")  # A member with one of these suffixes is extracted to the cache.
+DECOMPRESSORS: Dict[str, Callable[[bytes], bytes]] = {
+    ".gz": gzip.decompress,
+    ".bz2": bz2.decompress,
+    ".xz": lzma.decompress,
+}
+READ_ERRORS = (tarfile.TarError, OSError, EOFError, zlib.error, lzma.LZMAError)
+READ_ATTEMPTS = 3  # The archive can be replaced during a read. Then the read starts again.
 
 
 class ArchiveError(ValueError):
@@ -35,26 +47,32 @@ class Archive:
         return {run: sorted(files) for run, files in members.items()}
 
     def read(self, run: str, name: str) -> bytes:
-        """Return the bytes of one member. A member with a compression suffix is extracted to cache_dir once."""
-        key, members = self._index()
-        info = members.get(run, {}).get(name)
-        if info is None:
-            raise ArchiveError("%s: no member %s/%s" % (self.path, run, name))
-        if name.endswith(COMPRESSED):
-            return self._read_cached(key, info, name)
-        return self._stream(info)
+        """Return the bytes of one member. A member with a .gz, .bz2 or .xz suffix is returned decompressed."""
+        for _ in range(READ_ATTEMPTS):
+            key, members = self._index()
+            info = members.get(run, {}).get(name)
+            if info is None:
+                raise ArchiveError("%s: no member %s/%s" % (self.path, run, name))
+            ext = next((e for e in DECOMPRESSORS if name.endswith(e)), None)
+            data = self._cached(key, info, name, ext) if ext else self._stream(info)
+            if self._stat_key() == key:  # The bytes belong to the archive that the index describes.
+                return data
+        raise ArchiveError("%s: the archive changed during the read" % self.path)
 
     def _index(self) -> Tuple[Tuple[int, int], Dict[str, Dict[str, tarfile.TarInfo]]]:
         with self._lock:
-            try:
-                st = os.stat(self.path)
-            except OSError as e:
-                raise self._error(e) from e
-            key = (st.st_mtime_ns, st.st_size)
+            key = self._stat_key()
             if key != self._key:
                 self._members = self._scan()
                 self._key = key
             return key, self._members
+
+    def _stat_key(self) -> Tuple[int, int]:
+        try:
+            st = os.stat(self.path)
+        except OSError as e:
+            raise self._error(e) from e
+        return st.st_mtime_ns, st.st_size
 
     def _scan(self) -> Dict[str, Dict[str, tarfile.TarInfo]]:
         runs: Dict[str, Dict[str, tarfile.TarInfo]] = {}
@@ -62,33 +80,52 @@ class Archive:
             with tarfile.open(self.path, "r:*") as tar:
                 for info in tar:
                     parts = info.name.split("/")
-                    if info.isfile() and len(parts) >= 3:  # Skip MANIFEST.txt at the top level.
+                    # The root and MANIFEST.txt have fewer than three parts. Skip "..": it is not a member.
+                    if info.isfile() and len(parts) >= 3 and ".." not in parts:
                         runs.setdefault(parts[1], {})["/".join(parts[2:])] = info
-        except (tarfile.TarError, OSError, EOFError, zlib.error) as e:
+        except READ_ERRORS as e:
             raise self._error(e) from e
         return runs
 
+    # ponytail: gzip cannot seek, so each read streams from the start of the archive. Cost is about
+    # N times the archive size for N frames. Upgrade: a seekable index of the stream, if reads get slow.
     def _stream(self, info: tarfile.TarInfo) -> bytes:
-        # Gzip cannot seek to a member, so the stream is read up to it. Nothing is written to disk.
         try:
             with tarfile.open(self.path, "r:*") as tar:
                 return tar.extractfile(info).read()
-        except (tarfile.TarError, OSError, EOFError, zlib.error) as e:
+        except READ_ERRORS as e:
             raise self._error(e) from e
 
-    def _read_cached(self, key: Tuple[int, int], info: tarfile.TarInfo, name: str) -> bytes:
-        # The cache name holds the archive mtime and size, so an old copy is never read again.
-        tag = "%s|%d|%d|%s" % (self.path, key[0], key[1], info.name)
-        digest = hashlib.sha256(tag.encode()).hexdigest()[:16]
-        target = os.path.join(self.cache_dir, "%s-%s" % (digest, os.path.basename(name)))
-        if not os.path.exists(target):
-            data = self._stream(info)
-            os.makedirs(self.cache_dir, exist_ok=True)
-            with open(target + ".tmp", "wb") as f:
+    def _cached(self, key: Tuple[int, int], info: tarfile.TarInfo, name: str, ext: str) -> bytes:
+        # Cache names hold the archive key. A file of an older key is removed after a new one is written.
+        prefix = hashlib.sha256(self.path.encode()).hexdigest()[:12]
+        key_tag = hashlib.sha256(("%d|%d" % key).encode()).hexdigest()[:12]
+        mem_tag = hashlib.sha256(info.name.encode()).hexdigest()[:12]
+        target = os.path.join(self.cache_dir, "%s-%s-%s-%s" % (prefix, key_tag, mem_tag, os.path.basename(name)))
+        try:
+            if not os.path.exists(target):
+                data = DECOMPRESSORS[ext](self._stream(info))
+                self._write_cache(target, data, prefix, key_tag)
+            with open(target, "rb") as f:
+                return f.read()
+        except READ_ERRORS as e:
+            raise self._error(e) from e
+
+    def _write_cache(self, target: str, data: bytes, prefix: str, key_tag: str) -> None:
+        os.makedirs(self.cache_dir, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(dir=self.cache_dir, suffix=".tmp")
+        try:
+            with os.fdopen(fd, "wb") as f:
                 f.write(data)
-            os.replace(target + ".tmp", target)
-        with open(target, "rb") as f:
-            return f.read()
+            os.replace(tmp, target)
+        except BaseException:
+            with contextlib.suppress(OSError):
+                os.unlink(tmp)
+            raise
+        for old in os.listdir(self.cache_dir):  # Remove files of this archive with an older key.
+            if old.startswith(prefix + "-") and old.split("-")[1] != key_tag:
+                with contextlib.suppress(OSError):
+                    os.unlink(os.path.join(self.cache_dir, old))
 
     def _error(self, e: Exception) -> ArchiveError:
         return ArchiveError("cannot read archive %s: %s" % (self.path, str(e) or type(e).__name__))
