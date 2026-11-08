@@ -7,6 +7,7 @@ from h4nb_viz import media
 
 FAKE_FFMPEG = """#!/bin/sh
 printf '%s\\n' "$@" > "$FAKE_FFMPEG_LOG"
+if [ -n "$FAKE_FFMPEG_HANG" ]; then exec sleep 30; fi
 if [ -n "$FAKE_FFMPEG_ERR" ]; then
   echo "$FAKE_FFMPEG_ERR" >&2
   exit 1
@@ -53,7 +54,8 @@ def test_to_mp4_runs_ffmpeg_with_argument_list(fake_bin, tmp_path):
     dst = tmp_path / "run.mp4"
     media.to_mp4(src, dst)
     argv = fake_bin.read_text().splitlines()
-    assert argv == ["-y", "-loglevel", "error", "-i", str(src), "-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "18", str(dst)]
+    assert argv == ["-y", "-loglevel", "error", "-f", "matroska", "-i", str(src),
+                    "-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "18", str(dst)]
 
 
 def test_to_mp4_accepts_safari_mp4_input(fake_bin, tmp_path):
@@ -78,4 +80,25 @@ def test_to_mp4_missing_ffmpeg_gives_clear_error(no_ffmpeg, tmp_path):
 def test_to_mp4_failing_ffmpeg_gives_its_stderr(fake_bin, tmp_path, monkeypatch):
     monkeypatch.setenv("FAKE_FFMPEG_ERR", "Invalid data found: bad webm header")
     with pytest.raises(media.FfmpegError, match="exit code 1: Invalid data found: bad webm header"):
+        media.to_mp4(tmp_path / "run.webm", tmp_path / "out.mp4")
+
+
+def test_to_mp4_gives_the_input_format_before_the_input(fake_bin, tmp_path):
+    media.to_mp4(tmp_path / "run.webm", tmp_path / "out.mp4")
+    argv = fake_bin.read_text().splitlines()
+    assert argv[argv.index("-f") + 1] == "matroska"
+    assert argv.index("-f") < argv.index("-i")
+
+
+def test_to_mp4_names_mov_for_safari_mp4(fake_bin, tmp_path):
+    media.to_mp4(tmp_path / "run.mp4", tmp_path / "out.mp4")
+    argv = fake_bin.read_text().splitlines()
+    assert argv[argv.index("-f") + 1] == "mov"
+    assert argv.index("-f") < argv.index("-i")
+
+
+def test_to_mp4_hung_ffmpeg_raises_a_clear_error(fake_bin, tmp_path, monkeypatch):
+    monkeypatch.setenv("FAKE_FFMPEG_HANG", "1")
+    monkeypatch.setattr(media, "FFMPEG_TIMEOUT", 0.5)
+    with pytest.raises(media.FfmpegError, match="timed out"):
         media.to_mp4(tmp_path / "run.webm", tmp_path / "out.mp4")

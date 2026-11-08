@@ -10,6 +10,9 @@ import subprocess
 from pathlib import Path
 
 INPUT_SUFFIXES = (".webm", ".mp4")
+# The container format of each input. ffmpeg needs it before -i for some inputs.
+INPUT_FORMATS = {".webm": "matroska", ".mp4": "mov"}
+FFMPEG_TIMEOUT = 600  # Seconds. A hung conversion must not block the server for ever.
 
 
 class FfmpegError(RuntimeError):
@@ -28,7 +31,13 @@ def to_mp4(src, dst):
     exe = find_ffmpeg()
     if exe is None:
         raise FfmpegError("ffmpeg is not installed. Install ffmpeg to export MP4.")
-    cmd = [exe, "-y", "-loglevel", "error", "-i", str(src), "-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "18", str(dst)]
-    proc = subprocess.run(cmd, stdin=subprocess.DEVNULL, capture_output=True, text=True)
+    fmt = INPUT_FORMATS[Path(src).suffix.lower()]
+    cmd = [exe, "-y", "-loglevel", "error", "-f", fmt, "-i", str(src),
+           "-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "18", str(dst)]
+    try:
+        proc = subprocess.run(cmd, stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                              timeout=FFMPEG_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        raise FfmpegError(f"ffmpeg timed out after {FFMPEG_TIMEOUT} s and was stopped")
     if proc.returncode != 0:
         raise FfmpegError(f"ffmpeg failed with exit code {proc.returncode}: {proc.stderr.strip()}")

@@ -11,7 +11,7 @@ import numpy as np
 import pytest
 
 from h4nb_viz import server as h4nb_viz_server
-from h4nb_viz.server import json_list, make_server
+from h4nb_viz.server import cookie_name, json_list, make_server
 from h4nb_viz.fake import write_fake_run
 from h4nb_viz.snapshots import FRAME_HEADER, FRAME_MAGIC
 
@@ -422,7 +422,7 @@ def test_link_with_token_sets_http_only_cookie_and_redirects(server):
     status, response, _ = raw_get(port, "/?token=" + _TOKEN["value"], {})
     cookie = response.getheader("Set-Cookie")
     assert status == 303 and response.getheader("Location") == "/"
-    assert cookie.startswith("h4nb_token=" + _TOKEN["value"])
+    assert cookie.startswith(cookie_name(port) + "=" + _TOKEN["value"])
     assert "HttpOnly" in cookie and "SameSite=Strict" in cookie and "Path=/" in cookie
 
 
@@ -435,8 +435,20 @@ def test_link_with_wrong_token_is_refused(server):
 def test_cookie_authorizes_api_requests(server):
     base, httpd = server
     port = httpd.server_address[1]
-    assert raw_get(port, "/api/status", {"Cookie": "h4nb_token=" + _TOKEN["value"]})[0] == 200
-    assert raw_get(port, "/api/status", {"Cookie": "h4nb_token=guess"})[0] == 403
+    assert raw_get(port, "/api/status", {"Cookie": cookie_name(port) + "=" + _TOKEN["value"]})[0] == 200
+    assert raw_get(port, "/api/status", {"Cookie": cookie_name(port) + "=guess"})[0] == 403
+
+
+def test_cookie_name_is_specific_to_the_port():
+    assert cookie_name(8820) == "h4nb_token_8820"
+    assert cookie_name(8820) != cookie_name(8821)
+
+
+def test_cookie_of_another_port_does_not_authorize(server):
+    base, httpd = server
+    port = httpd.server_address[1]
+    other = cookie_name(port + 1)
+    assert raw_get(port, "/api/status", {"Cookie": other + "=" + _TOKEN["value"]})[0] == 403
 
 
 def test_static_files_need_no_token(server):

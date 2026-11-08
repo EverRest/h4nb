@@ -29,7 +29,12 @@ from .snapshots import (FIELD_MASS, FIELD_POS, FIELD_VEL, Snapshot, SubsetCache,
                         list_frames)
 from .tables import SERIES_COLUMNS, read_series
 
-COOKIE_NAME = "h4nb_token"  # The access cookie. It is HttpOnly and SameSite=Strict.
+
+def cookie_name(port: int) -> str:
+    """The name of the access cookie. It depends on the port, so two servers on one host do not share it."""
+    return "h4nb_token_%d" % port
+
+
 MAX_EXPORT_BYTES = 1 << 30  # One export file can be 1 GiB at most.
 EXPORT_EXTENSIONS = (".webm", ".mp4", ".png", ".svg")
 WEB_DIR = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "web"))
@@ -276,7 +281,8 @@ class Handler(BaseHTTPRequestHandler):
             jar.load(self.headers.get("Cookie", ""))
         except http.cookies.CookieError:
             pass
-        cookie = jar[COOKIE_NAME].value if COOKIE_NAME in jar else ""
+        name = cookie_name(self.server.server_address[1])
+        cookie = jar[name].value if name in jar else ""
         return self._token_ok(self.headers.get("X-H4NB-Token", "")) or self._token_ok(cookie)
 
     def _check_token(self):
@@ -384,7 +390,8 @@ class Handler(BaseHTTPRequestHandler):
         if self._token_ok(query.get("token", [""])[0]):
             self.send_response(303)
             self.send_header("Location", "/")
-            self.send_header("Set-Cookie", "%s=%s; Path=/; HttpOnly; SameSite=Strict" % (COOKIE_NAME, app.token))
+            name = cookie_name(self.server.server_address[1])
+            self.send_header("Set-Cookie", "%s=%s; Path=/; HttpOnly; SameSite=Strict" % (name, app.token))
             self.send_header("Content-Length", "0")
             self.end_headers()
             return
