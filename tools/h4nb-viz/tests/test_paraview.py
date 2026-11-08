@@ -5,16 +5,20 @@ import xml.etree.ElementTree as ET
 import numpy as np
 import pytest
 
+from h4nb_viz.orbits import e_inc
 from h4nb_viz.paraview import write_vtp
 
-# Expected (name, type, components) of each array, in file order.
+# Expected (name, type, components) of each array, in file order (FR-016).
 EXPECTED = [
     ("points", "Float32", 3),
-    ("velocity", "Float32", 3),
-    ("mass", "Float32", 1),
     ("id", "Int64", 1),
+    ("m", "Float32", 1),
+    ("v", "Float32", 3),
+    ("speed", "Float32", 1),
+    ("r", "Float32", 1),
+    ("e", "Float32", 1),
+    ("inc", "Float32", 1),
 ]
-ITEM_SIZE = {"Float32": 4, "Int64": 8}
 
 
 def _split(path):
@@ -29,7 +33,7 @@ def _split(path):
 
 
 def _arrays(root):
-    """Return the DataArray elements of the point data and the points, by name."""
+    """Return the DataArray elements by name."""
     found = {}
     for el in root.iter("DataArray"):
         found[el.get("Name")] = el
@@ -66,6 +70,12 @@ def _check_file(path, n):
     return root, payload, arrays
 
 
+def _block(payload, arrays, name, dtype):
+    off = int(arrays[name].get("offset"))
+    (nbytes,) = struct.unpack("<Q", payload[off:off + 8])
+    return np.frombuffer(payload[off + 8:off + 8 + nbytes], dtype=dtype)
+
+
 def test_zero_particles(tmp_path):
     path = tmp_path / "empty.vtp"
     write_vtp(str(path), np.zeros((0, 3)), np.zeros((0, 3)), np.zeros(0), np.zeros(0, dtype=np.int64))
@@ -88,18 +98,42 @@ def test_several_particles(tmp_path):
 
     root, payload, arrays = _check_file(str(path), n)
 
-    # Values round-trip as float32 and int64, little-endian.
-    def block(name, dtype):
-        off = int(arrays[name].get("offset"))
-        (nbytes,) = struct.unpack("<Q", payload[off:off + 8])
-        return np.frombuffer(payload[off + 8:off + 8 + nbytes], dtype=dtype)
+    np.testing.assert_array_equal(_block(payload, arrays, "points", "<f4").reshape(n, 3), pos.astype(np.float32))
+    np.testing.assert_array_equal(_block(payload, arrays, "v", "<f4").reshape(n, 3), vel.astype(np.float32))
+    np.testing.assert_array_equal(_block(payload, arrays, "m", "<f4"), mass.astype(np.float32))
+    np.testing.assert_array_equal(_block(payload, arrays, "id", "<i8"), ids)
+    np.testing.assert_array_equal(_block(payload, arrays, "connectivity", "<i8"), np.arange(n))
+    np.testing.assert_array_equal(_block(payload, arrays, "offsets", "<i8"), np.arange(1, n + 1))
 
-    np.testing.assert_array_equal(block("points", "<f4").reshape(n, 3), pos.astype(np.float32))
-    np.testing.assert_array_equal(block("velocity", "<f4").reshape(n, 3), vel.astype(np.float32))
-    np.testing.assert_array_equal(block("mass", "<f4"), mass.astype(np.float32))
-    np.testing.assert_array_equal(block("id", "<i8"), ids)
-    np.testing.assert_array_equal(block("connectivity", "<i8"), np.arange(n))
-    np.testing.assert_array_equal(block("offsets", "<i8"), np.arange(1, n + 1))
+
+def test_derived_fields_match_norms_and_orbits(tmp_path):
+    n = 6
+    rng = np.random.default_rng(2)
+    pos = rng.standard_normal((n, 3))
+    vel = rng.standard_normal((n, 3))
+    path = tmp_path / "derived.vtp"
+    write_vtp(str(path), pos, vel, np.ones(n), np.arange(n, dtype=np.int64), mu=2.0)
+
+    _, payload, arrays = _check_file(str(path), n)
+
+    speed = _block(payload, arrays, "speed", "<f4")
+    r = _block(payload, arrays, "r", "<f4")
+    e = _block(payload, arrays, "e", "<f4")
+    inc = _block(payload, arrays, "inc", "<f4")
+
+    # The file stores float32 inputs, so the references use the same values.
+    pos32, vel32 = pos.astype(np.float32), vel.astype(np.float32)
+
+    # speed is |v|, r is the distance from the central body (particle 0).
+    np.testing.assert_allclose(speed, np.linalg.norm(vel32, axis=1), rtol=1e-6)
+    np.testing.assert_allclose(r, np.linalg.norm(pos32 - pos32[0], axis=1), rtol=1e-6)
+
+    # e and inc come from orbits.e_inc with the same mu. The central body has NaN.
+    e_ref, inc_ref = e_inc(pos32.astype(np.float64), vel32.astype(np.float64), mu=2.0)
+    np.testing.assert_allclose(e, e_ref.astype(np.float32), rtol=1e-6, equal_nan=True)
+    np.testing.assert_allclose(inc, inc_ref.astype(np.float32), rtol=1e-6, equal_nan=True)
+    assert np.isnan(e[0]) and np.isnan(inc[0])
+    assert r[0] == 0.0
 
 
 def test_mismatched_lengths_raise(tmp_path):

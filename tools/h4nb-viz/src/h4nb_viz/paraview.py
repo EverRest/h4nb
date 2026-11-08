@@ -9,11 +9,14 @@ from xml.sax.saxutils import quoteattr
 
 import numpy as np
 
+from h4nb_viz.orbits import e_inc
 
-def write_vtp(path, positions, velocities, masses, ids):
+
+def write_vtp(path, positions, velocities, masses, ids, mu=1.0):
     """Write particles as one VTK PolyData file with one vertex per particle.
 
     positions, velocities: shape (k, 3). masses: shape (k,). ids: shape (k,).
+    Particle 0 is the central body. mu is G times its mass (used for e and inc).
     Points are float32. The ids are int64.
     """
     pos = np.asarray(positions, dtype="<f4").reshape(-1, 3)
@@ -24,6 +27,14 @@ def write_vtp(path, positions, velocities, masses, ids):
     if not (len(vel) == len(mass) == len(ident) == n):
         raise ValueError("positions, velocities, masses and ids must have the same length")
 
+    # Derived point data (FR-016). r is measured from the central body.
+    speed = np.linalg.norm(vel, axis=1).astype("<f4") if n else np.zeros(0, "<f4")
+    r = np.linalg.norm(pos - pos[:1], axis=1).astype("<f4") if n else np.zeros(0, "<f4")
+    if n:
+        e, inc = (a.astype("<f4") for a in e_inc(pos, vel, mu))
+    else:
+        e = inc = np.zeros(0, "<f4")
+
     # Vertex cells: cell i holds point i.
     conn = np.arange(n, dtype="<i8")
     offs = np.arange(1, n + 1, dtype="<i8")
@@ -33,9 +44,13 @@ def write_vtp(path, positions, velocities, masses, ids):
         ("points", "Float32", 3, pos),
         ("connectivity", "Int64", 1, conn),
         ("offsets", "Int64", 1, offs),
-        ("velocity", "Float32", 3, vel),
-        ("mass", "Float32", 1, mass),
         ("id", "Int64", 1, ident),
+        ("m", "Float32", 1, mass),
+        ("v", "Float32", 3, vel),
+        ("speed", "Float32", 1, speed),
+        ("r", "Float32", 1, r),
+        ("e", "Float32", 1, e),
+        ("inc", "Float32", 1, inc),
     ]
 
     # Each block is a UInt64 byte count and the data. The offset is the block start.
@@ -63,9 +78,13 @@ def write_vtp(path, positions, velocities, masses, ids):
         f"        {decl('offsets', 'Int64')}\n"
         "      </Verts>\n"
         "      <PointData>\n"
-        f"        {decl('velocity', 'Float32', 3)}\n"
-        f"        {decl('mass', 'Float32')}\n"
         f"        {decl('id', 'Int64')}\n"
+        f"        {decl('m', 'Float32')}\n"
+        f"        {decl('v', 'Float32', 3)}\n"
+        f"        {decl('speed', 'Float32')}\n"
+        f"        {decl('r', 'Float32')}\n"
+        f"        {decl('e', 'Float32')}\n"
+        f"        {decl('inc', 'Float32')}\n"
         "      </PointData>\n"
         "    </Piece>\n"
         "  </PolyData>\n"
