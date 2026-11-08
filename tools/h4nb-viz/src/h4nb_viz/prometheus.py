@@ -57,6 +57,7 @@ def utc_epoch(text: Optional[str]) -> Optional[float]:
 def selector(metric: str, run_label: str) -> str:
     """The PromQL selector of one run. The label is the full run label of specs/002."""
     value = run_label.replace("\\", "\\\\").replace('"', '\\"')
+    value = value.replace("\n", "\\n").replace("\r", "\\r").replace("\t", "\\t")
     return '%s{run="%s",origin!="backfill"}' % (metric, value)
 
 
@@ -90,19 +91,32 @@ class Prometheus:
                 body = json.loads(r.read())
         except (OSError, ValueError, http.client.HTTPException) as err:
             raise PromError(str(err))
-        if body.get("status") != "success":
-            raise PromError(body.get("error", "query failed"))
-        return body["data"]["result"]
+        if not isinstance(body, dict) or body.get("status") != "success":
+            raise PromError(body.get("error", "query failed") if isinstance(body, dict) else "bad answer")
+        try:
+            result = body["data"]["result"]
+        except (KeyError, TypeError) as err:
+            raise PromError("bad answer: %s" % err)
+        if not isinstance(result, list):
+            raise PromError("bad answer: result is not a list")
+        return result
 
     def run_labels(self) -> Dict[str, str]:
-        """Return {start_utc: run label} for the runs that have an h4nb_run_info series."""
+        """Return {start_utc: run label} for the runs that have an h4nb_run_info series. A start_utc that two
+        runs share is left out: the match would pick the wrong run."""
         result = self._api("/api/v1/query", {"query": '%s{origin!="backfill"}' % RUN_INFO})
         labels: Dict[str, str] = {}
+        shared = set()
         for item in result:
             meta = item.get("metric", {})
             if meta.get("origin") == "backfill" or "start_utc" not in meta or "run" not in meta:
                 continue  # The matcher is in the query. This check also drops backfill on a bad answer.
-            labels.setdefault(meta["start_utc"], meta["run"])
+            start = meta["start_utc"]
+            if start in labels and labels[start] != meta["run"]:
+                shared.add(start)
+            labels.setdefault(start, meta["run"])
+        for start in shared:
+            del labels[start]
         return labels
 
     def _samples(self, metric: str, run_label: str, start: float, end: float, step: int) -> Dict[float, float]:

@@ -495,3 +495,42 @@ def test_percent_encoded_api_path_needs_the_token(server):
     response.read()
     conn.close()
     assert response.status == 403
+def test_shared_start_in_local_runs_is_not_matched(prom_server, fake_root):
+    base, _ = prom_server
+    align_start(os.path.join(fake_root, "flat"), START)  # Same start_utc as eta/run1.
+    runs = runs_by_name(base)
+    assert runs["eta~run1"]["in_prometheus"] is False and runs["flat"]["in_prometheus"] is False
+
+
+def test_shared_start_in_prometheus_is_not_matched(prom_server):
+    base, fake = prom_server
+    fake.info_file = "prom_run_info_shared.json"
+    assert runs_by_name(base)["eta~run1"]["in_prometheus"] is False
+
+
+def test_bad_prometheus_answer_keeps_runs_listed(prom_server):
+    base, fake = prom_server
+    fake.info_file = "prom_bad_list.json"
+    status, body = get_json(base, "/api/runs")
+    assert status == 200 and len(body) == 2
+    assert all(run["in_prometheus"] is False for run in body)
+
+
+def test_auto_falls_back_when_prometheus_has_no_samples(prom_server):
+    base, _ = prom_server
+    status, body = get_json(base, "/api/runs/eta~run1/series?names=dt_min&source=auto")
+    assert status == 200 and body["source"] == "files"
+
+
+def test_explicit_prometheus_keeps_an_empty_answer(prom_server):
+    base, _ = prom_server
+    status, body = get_json(base, "/api/runs/eta~run1/series?names=dt_min&source=prometheus")
+    assert status == 200 and body["source"] == "prometheus"
+
+
+def test_export_accepts_localhost_origin(server):
+    base, httpd = server
+    port = httpd.server_address[1]
+    status, body = call(base, "/api/export?name=lh.png", method="POST", host="localhost:%d" % port,
+                        origin="http://localhost:%d" % port, body=b"1")
+    assert status == 200 and body["path"].endswith("lh.png")

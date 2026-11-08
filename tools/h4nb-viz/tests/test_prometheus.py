@@ -6,7 +6,7 @@ from http.server import ThreadingHTTPServer
 
 import pytest
 
-from h4nb_viz.prometheus import NAMES, Prometheus
+from h4nb_viz.prometheus import NAMES, Prometheus, PromError, selector
 from h4nb_viz.server import App, make_server
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -93,3 +93,27 @@ def test_fallback_to_files_when_prometheus_is_down(fake_root, fake_prometheus):
     finally:
         httpd.shutdown()
         httpd.server_close()
+
+
+def test_shared_start_is_left_out_of_run_labels(fake_prometheus):
+    fake_prometheus.info_file = "prom_run_info_shared.json"  # Two runs start at START.
+    assert Prometheus(fake_prometheus.url).run_labels() == {"2026-11-08T11:00:00Z": "scan/run1"}
+
+
+def test_bad_answer_shape_is_a_prometheus_error(fake_prometheus):
+    for name in ("prom_bad_list.json", "prom_bad_nodata.json"):
+        fake_prometheus.info_file = name
+        with pytest.raises(PromError):
+            Prometheus(fake_prometheus.url).run_labels()
+
+
+def test_selector_escapes_quote_and_newline():
+    assert selector("h4nb_x", 'a"b\nc') == 'h4nb_x{run="a\\"b\\nc",origin!="backfill"}'
+
+
+def test_backfilled_samples_are_dropped(monkeypatch):
+    client = Prometheus("http://127.0.0.1:9")
+    items = [{"metric": {"origin": "backfill"}, "values": [[1700000000, "9"]]},
+             {"metric": {"run": "eta/run1"}, "values": [[1700000000, "1"]]}]
+    monkeypatch.setattr(client, "_api", lambda path, params: items)
+    assert client._samples("h4nb_x", "eta/run1", 0, 1, 15) == {1700000000.0: 1.0}

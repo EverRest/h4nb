@@ -9,6 +9,7 @@ import hmac
 import http.cookies
 import json
 import mimetypes
+from collections import Counter
 import os
 import re
 import secrets
@@ -157,10 +158,17 @@ class App:
                 self._labels = {}  # Prometheus is down. The runs are then not in Prometheus.
         return self._labels
 
+    def matched_labels(self) -> Dict[str, str]:
+        """{start_utc: run label} for the start values that exactly one local run has. A start value that two
+        local runs share is left out: the match would give both runs the same Prometheus data."""
+        labels = self.prom_labels()
+        counts = Counter(start_utc_of(path) for path in self.runs.runs().values())
+        return {start: label for start, label in labels.items() if counts[start] == 1}
+
     def run_list(self, now: float) -> List[dict]:
         found = [(newest_change(path), name, path) for name, path in self.runs.runs().items()]
         found.sort(key=lambda item: -item[0])
-        labels = self.prom_labels()
+        labels = self.matched_labels()
         return [summarize(name, path, now, labels.get(start_utc_of(path))) for _, name, path in found]
 
     def series(self, name: str, query: Dict[str, List[str]]) -> dict:
@@ -173,7 +181,7 @@ class App:
             raise ApiError(400, "names is required")
         if source == "files":
             return {"source": "files", "series": self.file_series(run_dir, names)}
-        label = self.prom_labels().get(start_utc_of(run_dir)) if self.prom else None
+        label = self.matched_labels().get(start_utc_of(run_dir)) if self.prom else None
         start = utc_epoch(start_utc_of(run_dir))
         prom_names = [n for n in names if n in NAMES]
         if source == "prometheus":
@@ -191,6 +199,9 @@ class App:
         except PromError as err:
             if source == "prometheus":
                 raise ApiError(503, "Prometheus is not reachable: %s" % err)
+            return {"source": "files", "series": self.file_series(run_dir, names)}
+        if source == "auto" and not any(out[n]["x"] for n in prom_names):
+            # Prometheus has no samples for this run (scrape gap, or past its retention). The files may have them.
             return {"source": "files", "series": self.file_series(run_dir, names)}
         rest = [n for n in names if n not in NAMES]
         out.update(self.file_series(run_dir, rest))
@@ -327,8 +338,8 @@ class Handler(BaseHTTPRequestHandler):
         if url.path != "/api/export":
             raise ApiError(404, "no such path")
         # Only the page of this server may write. Check the origin before the body is read.
-        origin = "http://127.0.0.1:%d" % self.server.server_address[1]
-        if self.headers.get("Origin") != origin:
+        port = self.server.server_address[1]
+        if self.headers.get("Origin") not in ("http://127.0.0.1:%d" % port, "http://localhost:%d" % port):
             raise ApiError(403, "the origin is not allowed")
         length = self.headers.get("Content-Length")
         if length is None:
