@@ -15,13 +15,13 @@ The MPI issue files are `docs/review/issues/MPI-<H|M><n>.md`. One file for each 
 
 - Built in a container without a GPU: nvcc 12.0, Open MPI 4.1.6, `-DH4NB_MPI=ON`, sm_80. No warnings. `ctest -L cpu`: 3/3 pass.
 - Ran `h4nb_run` with `mpirun -np 1..4`, and MPMD launches with different settings and inputs on each rank. All runs stop in the `Simulation` constructor ("no CUDA device").
-- CPU emulation of the force path (`src/mpi_comm.cpp` linked, host copies of `split`, the force row and chunk order and `sum_partials`): step() with G parts against step_mpi() on P ranks, P = 2, 3, 4, 8, N = 37, 1000, 2051, 3 seeds, also m = 0 on rank 0. All 36 cases give identical bits of the forces, the same Tn and the same NA.
+- CPU emulation of the force path (`src/mpi_comm.cpp` linked, host copies of `split`, the force row and chunk order and `sum_partials`): the single-process peer path of `step()` with G parts against the MPI collective path of `step()` on P ranks, P = 2, 3, 4, 8, N = 37, 1000, 2051, 3 seeds, also m = 0 on rank 0. All 36 cases give identical bits of the forces, the same Tn and the same NA.
 - CPU microbenchmark of the collectives (host buffers, shared memory; not cluster numbers): 7 collectives against 3 packed.
 - Not run: the GPU kernels, CUDA-aware exchange, host staging on a GPU, the NaN halt, MPI_Abort after a CUDA error.
 
 ## Summary
 
-The force path of `step_mpi()` is correct. It gives the same bits as one process with `devices={0,1}` (emulated on the CPU; the GPU check A9 is still open). Counts, displacements, the in-place Allgatherv, the Alltoallv rows, the rank-order owner sum and the stream syncs are correct. No data race. No int overflow up to N of about 67M.
+The force path of the MPI branch of `step()` is correct. It gives the same bits as one process with `devices={0,1}` (emulated on the CPU; the GPU check A9 is still open). Counts, displacements, the in-place Allgatherv, the Alltoallv rows, the rank-order owner sum and the stream syncs are correct. No data race. No int overflow up to N of about 67M. **Closed 2026-11-08:** `step_mpi()` is removed; both exchange paths live in one `step()` (T031).
 
 The main problems:
 
@@ -63,7 +63,7 @@ The details and the fixes of HIGH and MEDIUM are in the issue files.
 - **L8.** Config contract drift: the header says a single process ignores `device_offset`, but `validate()` rejects < 0 there (`simulation.cu:102`); an empty `devices` is rejected under MPI though MPI ignores it (`:101`); `rank_table(-1)` gives a negative id.
 - **L9.** `abort_ranks` text differs between builds (`mpi_comm.cpp:123` against `single_rank.cpp`). Use one format.
 - **L10.** The library is always collective when the world has more than one rank (`simulation.cu:180`). An application with one independent `Simulation` per rank cannot use an MPI build. Fix if needed: a Config field or a communicator argument.
-- **L11.** Code duplication: the `correct_kernel` dispatch (`simulation.cu:463-469` and `:565-571`); host-name code in `mpi_comm.cpp:161` and `tools/run_info.hpp`. Doc drift: "five collectives" (`simulation.cu:489`), "three collectives" (`docs/multi-node-design.md:33`).
+- **L11.** ~~Code duplication: the `correct_kernel` dispatch~~ **Closed 2026-11-08** (`launch_correct` in `step()`). Still open: host-name code in `mpi_comm.cpp:161` and `tools/run_info.hpp`. Doc drift: "five collectives" vs "three collectives" (`docs/multi-node-design.md:33`).
 - **Cross-reference.** The one-process constructor leaks CUDA resources when it throws (`simulation.cu:179-188`). This is in the library review. The MPI constructor is correct: it calls `release()` after a failed setup.
 
 ## Cost model of one block step (estimate)
