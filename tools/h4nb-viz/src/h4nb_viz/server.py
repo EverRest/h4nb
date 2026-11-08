@@ -13,6 +13,7 @@ from collections import Counter
 import os
 import re
 import secrets
+import threading
 import time
 import traceback
 import urllib.parse
@@ -137,6 +138,11 @@ class App:
 
         # Every /api/ request must send this token. The page gets it from index.html (same origin only).
         self.token = secrets.token_urlsafe(32)
+        # The link that the server prints works once. It is not the session secret, so it cannot
+        # authorize API requests, and a copied link stops working after the first use.
+        self.link_token = secrets.token_urlsafe(32)
+        self._link_used = False
+        self._link_lock = threading.Lock()
 
     def run_dir(self, name: str) -> str:
         path = self.runs.runs().get(name)
@@ -384,10 +390,23 @@ class Handler(BaseHTTPRequestHandler):
                 body["mp4_error"] = str(err)  # Keep the WebM. Show the error.
         self._json(200, body)
 
+    def _use_link(self, app: App, given: str) -> bool:
+        """Accept the link token once. Return False for a wrong token or a token that was used."""
+        with app._link_lock:
+            if app._link_used or not given:
+                return False
+            if not hmac.compare_digest(given.encode("utf-8"), app.link_token.encode("utf-8")):
+                return False
+            app._link_used = True
+            return True
+
     def _index(self, app: App, query: Dict[str, List[str]]):
-        """The page. A link with the token sets the access cookie and redirects to the clean address,
-        so the token leaves the address bar. The token is never written into the page."""
-        if self._token_ok(query.get("token", [""])[0]):
+        """The page. A link with the one-time token sets the access cookie and redirects to the clean
+        address, so the token leaves the address bar. The session secret is never written into the page."""
+        given = query.get("token", [""])[0]
+        if given:
+            if not self._use_link(app, given):
+                raise ApiError(403, "this link is wrong or was already used. Restart the server for a new link.")
             self.send_response(303)
             self.send_header("Location", "/")
             name = cookie_name(self.server.server_address[1])
@@ -438,7 +457,7 @@ def make_server(root: str, port: int = 8820, export_dir: Optional[str] = None, w
 def serve(root: str, port: int = 8820, export_dir: Optional[str] = None, open_browser: bool = True,
           prometheus: Optional[str] = None, grafana_url: Optional[str] = None) -> None:
     httpd = make_server(root, port, export_dir, prometheus=prometheus, grafana_url=grafana_url)
-    url = "http://127.0.0.1:%d/?token=%s" % (httpd.server_address[1], httpd.app.token)
+    url = "http://127.0.0.1:%d/?token=%s" % (httpd.server_address[1], httpd.app.link_token)
     print("h4nb-viz: serving %s. Open this link (Ctrl+C stops the server):\n  %s" % (httpd.app.root, url), flush=True)
     if open_browser:
         webbrowser.open(url)

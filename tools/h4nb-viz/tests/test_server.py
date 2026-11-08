@@ -17,6 +17,7 @@ from h4nb_viz.snapshots import FRAME_HEADER, FRAME_MAGIC
 
 
 _TOKEN = {"value": ""}  # The token of the running test server.
+_LINK = {"value": ""}  # The one-time link token of the running test server.
 
 
 @pytest.fixture
@@ -27,6 +28,7 @@ def server(fake_root, tmp_path):
     (web / "app.js").write_text("console.log(1);")
     httpd = make_server(fake_root, port=0, export_dir=str(tmp_path / "exports"), web_dir=str(web))
     _TOKEN["value"] = getattr(httpd.app, "token", "")
+    _LINK["value"] = getattr(httpd.app, "link_token", "")
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
     yield "http://127.0.0.1:%d" % httpd.server_address[1], httpd
     httpd.shutdown()
@@ -419,7 +421,7 @@ def raw_get(port, path, headers):
 def test_link_with_token_sets_http_only_cookie_and_redirects(server):
     base, httpd = server
     port = httpd.server_address[1]
-    status, response, _ = raw_get(port, "/?token=" + _TOKEN["value"], {})
+    status, response, _ = raw_get(port, "/?token=" + _LINK["value"], {})
     cookie = response.getheader("Set-Cookie")
     assert status == 303 and response.getheader("Location") == "/"
     assert cookie.startswith(cookie_name(port) + "=" + _TOKEN["value"])
@@ -645,3 +647,32 @@ def test_series_prometheus_name_outside_table_is_400(prom_server):
     base, _ = prom_server
     status, body = get_json(base, "/api/runs/eta~run1/series?names=period_max_rel_err&source=prometheus")
     assert status == 400 and "error" in body
+
+
+def test_link_token_works_only_once(server):
+    base, httpd = server
+    port = httpd.server_address[1]
+    assert raw_get(port, "/?token=" + _LINK["value"], {})[0] == 303
+    assert raw_get(port, "/?token=" + _LINK["value"], {})[0] == 403
+
+
+def test_link_token_is_not_the_session_secret(server):
+    base, httpd = server
+    port = httpd.server_address[1]
+    assert _LINK["value"] != _TOKEN["value"]
+    _, response, _ = raw_get(port, "/?token=" + _LINK["value"], {})
+    assert _LINK["value"] not in response.getheader("Set-Cookie")
+
+
+def test_link_token_does_not_authorize_api_requests(server):
+    base, httpd = server
+    port = httpd.server_address[1]
+    assert raw_get(port, "/api/status", {"Cookie": cookie_name(port) + "=" + _LINK["value"]})[0] == 403
+    assert raw_get(port, "/api/status", {"X-H4NB-Token": _LINK["value"]})[0] == 403
+
+
+def test_session_cookie_still_works_after_the_link_is_used(server):
+    base, httpd = server
+    port = httpd.server_address[1]
+    raw_get(port, "/?token=" + _LINK["value"], {})
+    assert raw_get(port, "/api/status", {"Cookie": cookie_name(port) + "=" + _TOKEN["value"]})[0] == 200
