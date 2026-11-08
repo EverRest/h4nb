@@ -31,14 +31,14 @@ description: "Task list for h4nb-viz: local web app for the visualization of run
 ## Phase 1: Setup
 
 - [x] T001 **[Q1]** Create `tools/h4nb-viz/pyproject.toml`. Set the name `h4nb-viz` and Python ≥ 3.10. Add the dependency `numpy>=1.24`. Add the extra `dev = ["pytest"]`. Add the entry point `h4nb-viz = h4nb_viz.__main__:main`. Create the empty package layout of plan.md Project Structure.
-  - Evidence: `tools/h4nb-viz/pyproject.toml` exists. `pip install -e tools/h4nb-viz[dev]` works on Python 3.13.3. Modules of later tasks (T010 and up) are not created yet.
+  - Evidence: `pip install -e tools/h4nb-viz[dev]` exit 0 on Python 3.13.3. `pip show h4nb-viz` gives version 0.1.0. `h4nb-viz --help` prints `usage: h4nb-viz [-h] {fake,serve} ...`.
 - [x] T002 [P] Vendor `three.js` r160 (`three.module.min.js`) and `uPlot` 1.6.30 (`uPlot.esm.js`, `uPlot.min.css`) into `tools/h4nb-viz/web/vendor/`. Add their LICENSE files. Add a `VERSIONS.txt`. `VERSIONS.txt` lists the version, the source URL and the sha256 of each file.
-  - Evidence: the files are in `tools/h4nb-viz/web/vendor/`, with `LICENSE-three.txt`, `LICENSE-uPlot.txt` and `VERSIONS.txt`. The header of `three.module.min.js` gives `160`. The SHA-256 sums are in `VERSIONS.txt`.
+  - Evidence: `shasum -a 256 tools/h4nb-viz/web/vendor/*` gives the sums in `VERSIONS.txt`. The header of `three.module.min.js` contains `const t="160"`.
 - [x] T003 [P] Copy `tools/h4nb-metrics/src/h4nb_metrics/readers.py` to `tools/h4nb-viz/src/h4nb_viz/readers.py`.
   - Add a header comment with the source commit.
   - If specs/002 is not on `main` yet, write the same functions from `specs/001-hermite-nbody-lib/contracts/file-formats.md`.
   - These functions are `parse_config_used`, `parse_run_info`, `parse_header`, `parse_row` and `snapshot_header`.
-  - Evidence: `src/h4nb_viz/readers.py` has the five functions. The header gives commit 7d0d42c. Specs/002 is not on `main`, so the header says the copy is kept to these five functions.
+  - Evidence: `src/h4nb_viz/readers.py` has the five functions. `pytest tools/h4nb-viz/tests` on Python 3.13.3: 65 passed. The functions run in `test_tables.py`, `test_snapshots.py` and `test_server.py`.
 
 ---
 
@@ -54,26 +54,26 @@ description: "Task list for h4nb-viz: local web app for the visualization of run
   - Also write `energy.dat`, `momentum.dat`, `timesteps.dat`, `performance.dat`, `energy_periods.dat`, `config.used` and `run_info.txt`.
   - Use plausible values. The energy error follows a random walk near 1e-10.
   - If the specs/002 generator writes snapshots, reuse its table writer.
-  - Evidence: `h4nb-viz fake` wrote 61 snapshots, 5 tables, `config.used` and `run_info.txt` for n = 20 000 in 4.3 s (75 MB). The energy column stays constant per run. `tests/test_fake.py` and `tests/test_cli.py` pass. The writer is not reused from specs/002, because DD6 forbids importing `h4nb_metrics`.
+  - Evidence: `h4nb-viz fake <dir> --n 20000` ran in 4.28 s and wrote 61 snapshots (75 MB), 5 tables, `config.used` and `run_info.txt`. `pytest` on Python 3.13.3: 65 passed, including `test_fake.py` and `test_cli.py`.
 - [x] T005 Write `src/h4nb_viz/snapshots.py`. Write the v1 reader with `numpy.memmap`. Read one array at a time. Check the file size. Skip a file that is still being written. Build the decimation subset of plan.md DD3 and research.md R3. Cache the subset per run. The central body comes first.
-  - Evidence: `tests/test_snapshots.py` passes. It checks the round trip, a partial read, a partial file and the subset (same over frames, central body first).
+  - Evidence: `pytest tools/h4nb-viz/tests` on Python 3.13.3: 65 passed. `tests/test_snapshots.py` checks the round trip, a partial read, a partial file and the subset (same over frames, central body first).
 - [x] T006 [P] Write `src/h4nb_viz/tables.py`. Read a `.dat` table into `numpy` columns by header name. Read `.dat.tmp` when `.dat` is missing. Ignore a truncated last line. Use the name table of contracts/http-api.md.
-  - Evidence: `tests/test_tables.py` passes. It checks the header names, a truncated line, a short row and the `.tmp` fallback.
+  - Evidence: `pytest tools/h4nb-viz/tests` on Python 3.13.3: 65 passed. `tests/test_tables.py` checks the header names, a truncated line, a short row and the `.tmp` fallback.
 - [x] T007 Write `src/h4nb_viz/runs.py`. Find the runs under the root. A run is a directory with `config.used`, a snapshot or `energy.dat[.tmp]`. Give each run its name. Set the `state` by the rules of contracts/http-api.md. Rescan at most every 5 s.
-  - Evidence: `tests/test_runs.py` passes. It checks the five states, the `stale_after` rule and the rescan limit.
+  - Evidence: `pytest tools/h4nb-viz/tests` on Python 3.13.3: 65 passed. `tests/test_runs.py` checks the five states, the `stale_after` rule, the rescan limit and the run names.
 - [x] T008 Write `src/h4nb_viz/server.py` and the CLI `h4nb-viz serve ROOT [--port 8820] [--export-dir] [--no-browser]`.
   - Use `http.server.ThreadingHTTPServer` on `127.0.0.1`.
-  - Serve these endpoints: `/`, `/web/...`, `/api/status`, `/api/runs`, `/api/runs/{run}`, `/ids`, `/frames/{index}`.
+  - Serve these endpoints: `/`, `/web/...`, `/api/status`, `/api/runs`, `/api/runs/{run}`, `/api/runs/{run}/ids`, `/api/runs/{run}/frames/{index}`.
   - Serve `/series` with `source=files`.
   - See contracts/http-api.md and frame-format.md section 1.
   - Open the browser.
   - Do not open the browser when the user gives `--no-browser`.
-  - Evidence: `curl` checks on `h4nb-viz serve` gave the expected status codes and bytes for each endpoint. `tests/test_server.py` and `tests/test_cli.py` pass. The browser flag is tested through `main`.
+  - Evidence: `h4nb-viz serve` on port 8899 and `curl`: `/api/status` 200, `/api/runs` 200, `/api/runs/demo/ids?max_points=1000` 200 with `X-H4NB-Id-Type: u32`, frame with `fields=pos,vel,mass` 28040 bytes (= 40 + 28 × 1000), unknown run 404, frame 999 404, `/web/../../etc/passwd` 404, `series?names=eta_seconds` 400. `tests/test_server.py` and `tests/test_cli.py` pass in the 65-test run.
 - [x] T009 [P] Write the tests.
   - Write `tests/test_snapshots.py`. Test the round trip with the fake run and the partial read. Test that the subset stays the same over frames and contains the central body.
   - Write `tests/test_tables.py` for the header names, a truncated line and the `.tmp` fallback.
   - Write `tests/test_server.py` for a start on a free port, each MVP endpoint, the frame header bytes and the 404 for an unknown run.
-  - Evidence: `pytest` in `tools/h4nb-viz`: 61 passed on Python 3.10.21 and on Python 3.13.3.
+  - Evidence: `pytest tools/h4nb-viz/tests -p no:cacheprovider` on Python 3.13.3: `65 passed in 7.47s`. On Python 3.10.21: `65 passed in 7.50s`.
 
 ---
 
@@ -83,38 +83,48 @@ description: "Task list for h4nb-viz: local web app for the visualization of run
 
 **Independent Test**: `h4nb-viz fake demo && h4nb-viz serve demo`. Select the run. Press `P`.
 
-- [ ] T010 [US1] Write `web/index.html`, `web/style.css` and `web/app.js`.
+- [x] T010 [US1] Write `web/index.html`, `web/style.css` and `web/app.js`.
   - Build the layout. The run list is on the left. The 3D view is in the centre. The plots are below. The status bar is at the bottom.
   - Add dark and light themes (FR-011).
   - Add a time slider.
   - Add play and pause.
   - Add these keys: Space, `P`, `←` and `→` (frame step), and `T` (theme).
-- [ ] T011 [US1] Write `web/scene.js`. Use `THREE.Points` with a soft sprite and additive blending (research.md R2). Write a frame loader. The loader keeps a cache of `cache_frames` frames. It prefetches the next frames (FR-010). Add `OrbitControls`.
-- [ ] T012 [US1] In `web/scene.js`, add the camera presets top, edge and fly-around (V2). The fly-around is a slow orbit. It is the default for `P`.
-- [ ] T013 [US1] Add the color modes speed and radius with a color bar (V3, MVP part). The page computes both modes from `pos` and `vel` of the frame. Add `inferno` as a 256×1 texture.
-- [ ] T014 [US1] Build the presentation mode (V6). It runs full screen. It hides the controls. It plays automatically and loops. It shows the run name and the time in a corner.
+  - Evidence: `web/index.html`, `web/style.css`, `web/app.js` exist. Playwright (headless Chromium) loaded `/` with no JS errors. Keys: Space toggled play (slider moved from 1 to 10 in 1.5 s), ArrowRight stepped one frame (t = 0.10521), T switched the theme, P started presentation. Dark and light themes both render (screenshots checked).
+- [x] T011 [US1] Write `web/scene.js`. Use `THREE.Points` with a soft sprite and additive blending (research.md R2). Write a frame loader. The loader keeps a cache of `cache_frames` frames. It prefetches the next frames (FR-010). Add `OrbitControls`.
+  - Evidence: `web/scene.js` has `THREE.Points` with a soft sprite, additive blending and `depthWrite: false`. `FrameLoader` keeps 64 frames and prefetches the next two. `OrbitControls.js` is vendored (`web/vendor/`, SHA-256 in `VERSIONS.txt`). The 3D view draws the demo run (61 frames, N = 20 000) in the browser.
+- [x] T012 [US1] In `web/scene.js`, add the camera presets top, edge and fly-around (V2). The fly-around is a slow orbit. It is the default for `P`.
+  - Evidence: `View.setPreset` implements `top`, `edge` and `fly`. The buttons call it. `fit` and presentation start with `fly`. Screenshot of the presentation view shows the disk.
+- [x] T013 [US1] Add the color modes speed and radius with a color bar (V3, MVP part). The page computes both modes from `pos` and `vel` of the frame. Add `inferno` as a 256×1 texture.
+  - Evidence: colour modes `speed` and `radius` in `scene.js`. The colour bar and its range (`0.00 … 1.47` for speed on the demo run) update on change. Deviation: the inferno LUT (256 entries, generated from matplotlib 3.11.2) is a `Uint8Array` used for vertex colours, not a GPU texture.
+- [x] T014 [US1] Build the presentation mode (V6). It runs full screen. It hides the controls. It plays automatically and loops. It shows the run name and the time in a corner.
 
+  - Evidence: presentation mode (P) hides the sidebar, controls and status, enters full screen, starts the fly-around view and autoplays. It loops. The run name and time show in the corner (screenshot). Space stops and starts playback. Leaving full screen ends the mode.
 ---
 
 ## Phase 4: User Story 3 - Export media for slides (P1) 🎯 MVP
 
-- [ ] T015 [US3] Write `web/record.js`. Add a "Record" button. Call `canvas.captureStream(30)` and `MediaRecorder`. Set the size to 1920×1080. Resize the canvas during the recording. Send the file to `POST /api/export` (research.md R5).
-- [ ] T016 [US3] Add `POST /api/export` to `server.py`. Check the `Origin` header. Write the file into the export directory. MP4 conversion is in Phase 2 (T026).
-- [ ] T017 [P] [US3] Write `web/card.js`. It builds the run card S1 from `/api/runs/{run}`. The card shows N, t_end, GPU, devices or ranks, wall time, final energy error and commit. Add the PNG export at 2× scale (S3).
-- [ ] T018 [P] [US3] Add the PNG export of the 3D view (S3). Set `preserveDrawingBuffer` only during the export. Add the PNG export of each plot (S3).
+- [x] T015 [US3] Write `web/record.js`. Add a "Record" button. Call `canvas.captureStream(30)` and `MediaRecorder`. Set the size to 1920×1080. Resize the canvas during the recording. Send the file to `POST /api/export` (research.md R5).
+  - Evidence: `web/record.js`. Headless Chromium recorded the demo run to `demo-2026-11-08T18-16-07.webm` (3.6 MB). `ffprobe` reports VP9 at 1920 × 1080. The container has no duration (`N/A`). A later MP4 conversion (T026) should fix this. The ffmpeg hint is in the code, but no test showed it.
+- [x] T016 [US3] Add `POST /api/export` to `server.py`. Check the `Origin` header. Write the file into the export directory. MP4 conversion is in Phase 2 (T026).
+  - Evidence: `POST /api/export` in `server.py`. `tests/test_server.py` has four export tests (origin check, base name only, numbering of repeated names, bad names). `pytest` on Python 3.13.3: 70 passed. The response has `mp4: false` until T026.
+- [x] T017 [P] [US3] Write `web/card.js`. It builds the run card S1 from `/api/runs/{run}`. The card shows N, t_end, GPU, devices or ranks, wall time, final energy error and commit. Add the PNG export at 2× scale (S3).
+  - Evidence: `web/card.js` draws the card of the demo run: N 20000, t_end 6.3125, G 1, GPU, ranks, wall time 0:02:06, final energy error 7.94e-11, build and commit. The card PNG is 1600 × 920 px (2× of 800 × 460). Screenshot checked.
+- [x] T018 [P] [US3] Add the PNG export of the 3D view (S3). Set `preserveDrawingBuffer` only during the export. Add the PNG export of each plot (S3).
 
+  - Evidence: the View PNG is 1960 × 496 px (2× of the view size) and has 27 639 lit pixels in headless Chromium. Downloads of the card PNG and of the D1 and D5 PNG were captured. Deviations: `preserveDrawingBuffer` is not set, because the image is read in the same task as the render. The plot PNG uses the device pixel ratio, so it is 2× only on a HiDPI screen.
 ---
 
 ## Phase 5: Accuracy and speed plots (P1) 🎯 MVP
 
-- [ ] T019 [US1] `web/plots.js`: build uPlot panels D1 and D5.
+- [x] T019 [US1] `web/plots.js`: build uPlot panels D1 and D5.
   - D1 shows the energy error on a log y axis. `W_diss` is a second series.
   - D5 shows pairs/s and progress.
   - Both panels read from `/series`.
   - The tooltip shows the `metric` of each series (FR-014).
   - The time cursor of the 3D view is a vertical line on each plot.
   - A click on a plot moves the 3D view to the nearest frame.
-- [ ] T020 [US1] Write `tools/h4nb-viz/README.md` in STE.
+  - Evidence: `web/plots.js` builds D1 (log y, W_diss as a second series) and D5 (pairs/s, progress on a right axis). The screenshot shows both panels at 472 px with the time line and the G = 1 axis label. A click at 75 % of the D5 width moved the slider to frame 7 (t = 1.4) of an 11-frame run.
+- [x] T020 [US1] Write `tools/h4nb-viz/README.md` in STE.
   - Describe the install with `pip install -e tools/h4nb-viz`.
   - Describe the three commands of SC-005 and the keys.
   - Say where the exports go.
@@ -124,6 +134,7 @@ description: "Task list for h4nb-viz: local web app for the visualization of run
 
 **Checkpoint**: MVP done. Run a demo on a fake run with N = 1 048 577 (check SC-003) and with N = 20 000.
 
+  - Evidence: `tools/h4nb-viz/README.md` covers install, the two commands, keys, export and the rsync copy. The root `README.md` has one line for `tools/h4nb-viz/`. Check of SC-005: `h4nb-viz fake demo` then `h4nb-viz serve demo` lists the run `demo` with state `finished`.
 ---
 
 ## Phase 6: User Story 2 - Live run with data from Grafana (P1, Phase 2)
@@ -176,7 +187,8 @@ description: "Task list for h4nb-viz: local web app for the visualization of run
 - [ ] T027 [P] Write `src/h4nb_viz/orbits.py`. Add `/derived` and `/hist` (research.md R7). Test the code with circular and eccentric two-body orbits. The values of e and inc must match to 1e-6.
 - [ ] T028 Add the color modes e, inc, mass and ID (V3 full) from `/derived`.
 - [ ] T029 Add the plots P1 (Σ(r)), P2 (animated histograms of e and inc) and P3 (a–e plane) in `web/plots.js`.
-- [ ] T030 Add the D2, D3 and D4 panels.
+- [x] T030 Add the D2, D3 and D4 panels.
+  - Evidence: `web/plots.js` has D2 (error per period as bars, incomplete periods in red, from `period_complete`), D3 (dP/P and dL/L, log scale) and D4 (dt_min, dt_mean, dt_max, and r_min on a right axis). Playwright on the demo run: five panels with the same width, no JS error. Log axes use one tick per decade, because uPlot's own log ticks loop for values below about 1e-15. `pytest` on Python 3.13.3: 71 passed (new test for `period_complete`).
 - [ ] T031 Add V4 orbit trails. Keep a ring buffer of the last 64 positions for up to 200 selected particles. The user selects a particle by clicking it. Fade each trail with its age.
 - [ ] T032 [US5] Write `src/h4nb_viz/archive.py`.
   - Read runs from `h4nb_pack.sh` archives (FR-015).

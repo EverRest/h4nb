@@ -89,7 +89,7 @@ tools/h4nb-viz/
 
 - **DD1 Server does no rendering.** The laptop GPU renders. The server only slices arrays. This gives the low resource use that Pavlo asked for (research R1).
 - **DD2 Binary frames.** float32 positions, uint32 IDs once per run. 12 bytes per point (contracts/frame-format.md).
-- **DD3 Fixed subset.** Subset = IDs whose hash (splitmix64 of id ^ seed) is below a threshold. The same particles in all frames without a lookup table; the central body is always in it (research R3).
+- **DD3 Fixed subset.** Subset = the `max_points` IDs with the smallest hash (splitmix64 of id ^ seed). The count is exact, so `max_points` is a hard limit. The same particles in all frames without a lookup table; the central body is always in it and comes first (research R3).
 - **DD4 Two sources for curves.** Prometheus first for runs that it has, else files. One JSON shape for the page (contracts/http-api.md `/api/runs/{run}/series`).
 - **DD5 Glow without post-processing.** Additive blending of soft point sprites with a size that scales with the screen. No bloom pass, no shader library (research R2).
 - **DD6 Copy, not import, of `readers.py`.** h4nb-viz does not depend on the metrics package. The metrics session agreed (2026-11-08) not to rename these functions without notice.

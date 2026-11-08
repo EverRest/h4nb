@@ -64,6 +64,7 @@ src/single_rank.cpp       Rank functions for a build without MPI (one rank)
 src/diag_sum.hpp/.cpp     Host sums of the diagnostics. One process and MPI use the same function
 src/io.cpp                Text initial conditions, binary snapshots
 tools/                    Thin command-line clients of the public API (h4nb_run, h4nb_mkdisk, h4nb_bench, h4nb_order)
+tools/h4nb-viz/            Python: local web page for run results (3D view, plots, export). See tools/h4nb-viz/README.md
 tests/                    CPU oracle (same math header), CPU and GPU tests
 ```
 

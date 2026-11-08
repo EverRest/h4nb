@@ -94,13 +94,14 @@ JSON `{"edges": [...], "counts": [...], "unbound": 12}` for P2 and P3 on all par
 The curves for the D panels.
 
 ```json
-{"source": "prometheus", "x": "time",
- "series": {"energy_rel_err": {"x": [0.0, 0.0625], "y": [0.0, 1.2e-10], "unit": "1",
+{"source": "prometheus",
+ "series": {"energy_rel_err": {"x": [0.0, 0.0625], "x_name": "time", "y": [0.0, 1.2e-10],
             "metric": "h4nb_energy_rel_err"}}}
 ```
 
 - `source`: `auto` (Prometheus when the run has `in_prometheus` and Prometheus is reachable, else `files`), `prometheus`, `files`.
-- `x` is the simulation time (`"time"`) for all names except `period_max_rel_err`. For that name, `x` is `"period"` and `x` holds the period numbers.
+- Each series has its own `x_name`. `x_name` is `"time"` for all names except `period_max_rel_err`. For that name, `x_name` is `"period"` and `x` holds the period numbers. The page reads the axis from each series. There is no top-level `x` and no `unit` field.
+- `progress_ratio` is `time / t_end` of `energy.dat`. The server computes it. A run without `t_end` in `config.used` has no `progress_ratio` series.
 - For Prometheus, the server joins each metric with `h4nb_sim_time` on the sample timestamp (research.md R6). The join uses the same `origin!="backfill"` matcher as the metric.
 - `metric` is the metric name or `file:column` (for example `energy.dat:rel_err`). The page shows it in the tooltip (spec FR-014).
 
