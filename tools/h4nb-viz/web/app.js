@@ -1,10 +1,12 @@
 // Page logic of h4nb-viz: run list, time slider, playback, keys, presentation mode, themes,
 // movie recording and file export. Spec: specs/003-run-visualization (US1, US3, V6, FR-011).
 // Drawing is in scene.js, plots in plots.js, export helpers in record.js and card.js.
+import "./api.js"; // Reads the token from the fragment and adds it to the API requests. Load first.
 import { FrameLoader, View, drawColorBar } from "./scene.js";
 import { Plots } from "./plots.js";
 import { Recorder, extensionFor, saveFile, stamp, uploadExport } from "./record.js";
 import { drawCard } from "./card.js";
+import { hasToken } from "./api.js";
 
 const PLAY_FPS = 6; // Frames per second while playing.
 const RUN_POLL_MS = 5000; // The run list is read again this often. A running run gets a new frame list at this rate.
@@ -436,6 +438,10 @@ function main() {
   applyTheme(savedTheme());
   setPlotsShown(savedPlots());
   bindControls();
+  if (!hasToken()) {
+    setStatus("No access token in this tab. Open the link that the server printed.");
+    return;
+  }
   state.plots = new Plots($("plots"), { onSeek: seekTime });
   readServerStatus();
   try {

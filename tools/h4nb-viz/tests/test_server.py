@@ -11,7 +11,7 @@ import numpy as np
 import pytest
 
 from h4nb_viz import server as h4nb_viz_server
-from h4nb_viz.server import cookie_name, json_list, make_server
+from h4nb_viz.server import json_list, make_server
 from h4nb_viz.fake import write_fake_run
 from h4nb_viz.snapshots import FRAME_HEADER, FRAME_MAGIC
 
@@ -396,11 +396,6 @@ def test_export_without_token_is_refused(server):
     assert status == 403 and "error" in body
 
 
-def test_page_without_token_is_refused(server):
-    base, _ = server
-    assert get(base, "/", token="")[0] == 403
-
-
 def test_page_does_not_contain_the_token(server):
     base, _ = server
     status, _, body = get(base, "/")
@@ -418,39 +413,10 @@ def raw_get(port, path, headers):
     return response.status, response, body
 
 
-def test_link_with_token_sets_http_only_cookie_and_redirects(server):
-    base, httpd = server
-    port = httpd.server_address[1]
-    status, response, _ = raw_get(port, "/?token=" + _LINK["value"], {})
-    cookie = response.getheader("Set-Cookie")
-    assert status == 303 and response.getheader("Location") == "/"
-    assert cookie.startswith(cookie_name(port) + "=" + _TOKEN["value"])
-    assert "HttpOnly" in cookie and "SameSite=Strict" in cookie and "Path=/" in cookie
-
-
 def test_link_with_wrong_token_is_refused(server):
     base, httpd = server
     status, response, _ = raw_get(httpd.server_address[1], "/?token=guess", {})
-    assert status == 403 and response.getheader("Set-Cookie") is None
-
-
-def test_cookie_authorizes_api_requests(server):
-    base, httpd = server
-    port = httpd.server_address[1]
-    assert raw_get(port, "/api/status", {"Cookie": cookie_name(port) + "=" + _TOKEN["value"]})[0] == 200
-    assert raw_get(port, "/api/status", {"Cookie": cookie_name(port) + "=guess"})[0] == 403
-
-
-def test_cookie_name_is_specific_to_the_port():
-    assert cookie_name(8820) == "h4nb_token_8820"
-    assert cookie_name(8820) != cookie_name(8821)
-
-
-def test_cookie_of_another_port_does_not_authorize(server):
-    base, httpd = server
-    port = httpd.server_address[1]
-    other = cookie_name(port + 1)
-    assert raw_get(port, "/api/status", {"Cookie": other + "=" + _TOKEN["value"]})[0] == 403
+    assert status == 403
 
 
 def test_static_files_need_no_token(server):
@@ -656,23 +622,65 @@ def test_link_token_works_only_once(server):
     assert raw_get(port, "/?token=" + _LINK["value"], {})[0] == 403
 
 
-def test_link_token_is_not_the_session_secret(server):
+def test_page_is_served_without_a_secret(server):
+    base, httpd = server
+    status, _, body = get(base, "/", token="")
+    assert status == 200
+    assert _TOKEN["value"].encode() not in body
+
+
+def test_link_redirects_to_the_fragment_with_the_api_token(server):
+    base, httpd = server
+    port = httpd.server_address[1]
+    status, response, _ = raw_get(port, "/?token=" + _LINK["value"], {})
+    assert status == 303
+    assert response.getheader("Location") == "/#token=" + _TOKEN["value"]
+    assert response.getheader("Set-Cookie") is None
+
+
+def test_link_token_is_not_the_api_token(server):
     base, httpd = server
     port = httpd.server_address[1]
     assert _LINK["value"] != _TOKEN["value"]
     _, response, _ = raw_get(port, "/?token=" + _LINK["value"], {})
-    assert _LINK["value"] not in response.getheader("Set-Cookie")
+    assert _LINK["value"] not in response.getheader("Location")
+
+
+def test_no_response_sets_a_cookie(server):
+    base, httpd = server
+    port = httpd.server_address[1]
+    for path, headers in [("/", {}), ("/web/app.js", {}),
+                          ("/api/status", {"X-H4NB-Token": _TOKEN["value"]}),
+                          ("/api/status", {}), ("/api/status", {"X-H4NB-Token": "guess"})]:
+        _, response, _ = raw_get(port, path, headers)
+        assert response.getheader("Set-Cookie") is None, path
+
+
+def test_cookie_does_not_authorize_api_requests(server):
+    base, httpd = server
+    port = httpd.server_address[1]
+    assert raw_get(port, "/api/status", {"Cookie": "h4nb_token=" + _TOKEN["value"]})[0] == 403
+    assert raw_get(port, "/api/status", {"Cookie": "h4nb_token_%d=%s" % (port, _TOKEN["value"])})[0] == 403
 
 
 def test_link_token_does_not_authorize_api_requests(server):
     base, httpd = server
     port = httpd.server_address[1]
-    assert raw_get(port, "/api/status", {"Cookie": cookie_name(port) + "=" + _LINK["value"]})[0] == 403
     assert raw_get(port, "/api/status", {"X-H4NB-Token": _LINK["value"]})[0] == 403
 
 
-def test_session_cookie_still_works_after_the_link_is_used(server):
+def test_cross_site_request_without_the_header_is_refused(server):
     base, httpd = server
     port = httpd.server_address[1]
-    raw_get(port, "/?token=" + _LINK["value"], {})
-    assert raw_get(port, "/api/status", {"Cookie": cookie_name(port) + "=" + _TOKEN["value"]})[0] == 200
+    status, _ = call(base, "/api/runs", token="", host="127.0.0.1:%d" % port)
+    assert status == 403
+    status, body = call(base, "/api/export?name=x.png", method="POST", token="", origin="https://evil.example", body=b"1")
+    assert status == 403 and "error" in body
+
+
+
+def test_path_outside_api_is_404_without_token(server):
+    """A missing favicon must answer 404, not 403: the token guards the API only."""
+    base, httpd = server
+    port = httpd.server_address[1]
+    assert raw_get(port, "/favicon.ico", {})[0] == 404

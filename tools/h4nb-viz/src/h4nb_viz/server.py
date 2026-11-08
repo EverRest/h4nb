@@ -6,7 +6,6 @@ The page draws them. Errors are JSON objects: {"error": "<text>"}.
 from __future__ import annotations
 
 import hmac
-import http.cookies
 import json
 import mimetypes
 from collections import Counter
@@ -29,11 +28,6 @@ from .runs import RESCAN_SECONDS, RunIndex, central_id_of, detail, newest_change
 from .snapshots import (FIELD_MASS, FIELD_POS, FIELD_VEL, Snapshot, SubsetCache, encode_frame, encode_ids,
                         list_frames)
 from .tables import SERIES_COLUMNS, read_series
-
-
-def cookie_name(port: int) -> str:
-    """The name of the access cookie. It depends on the port, so two servers on one host do not share it."""
-    return "h4nb_token_%d" % port
 
 
 MAX_EXPORT_BYTES = 1 << 30  # One export file can be 1 GiB at most.
@@ -281,21 +275,16 @@ class Handler(BaseHTTPRequestHandler):
         return bool(given) and hmac.compare_digest(given.encode("utf-8"), self.server.app.token.encode("utf-8"))
 
     def _authorized(self) -> bool:
-        """True when the request has the token in the header or in the access cookie."""
-        jar = http.cookies.SimpleCookie()
-        try:
-            jar.load(self.headers.get("Cookie", ""))
-        except http.cookies.CookieError:
-            pass
-        name = cookie_name(self.server.server_address[1])
-        cookie = jar[name].value if name in jar else ""
-        return self._token_ok(self.headers.get("X-H4NB-Token", "")) or self._token_ok(cookie)
+        """True when the request carries the API token in the X-H4NB-Token header. No cookie is used:
+        a browser on another site cannot add this header without a CORS preflight, which is refused."""
+        return self._token_ok(self.headers.get("X-H4NB-Token", ""))
 
     def _check_token(self):
-        """Require access for every request except the page (it checks itself) and the static files.
-        The path is decoded the same way as in _route, so an encoded path cannot skip the check."""
+        """Require the token for the API. Other paths need no token: the page and the static files hold no
+        secret, and every other path answers 404. The path is decoded the same way as in _route, so an
+        encoded path cannot skip the check."""
         path = urllib.parse.unquote(urllib.parse.urlsplit(self.path).path)
-        if path == "/" or path.startswith("/web/"):
+        if not path.startswith("/api/"):
             return
         if not self._authorized():
             raise ApiError(403, "the token is missing or wrong")
@@ -401,21 +390,17 @@ class Handler(BaseHTTPRequestHandler):
             return True
 
     def _index(self, app: App, query: Dict[str, List[str]]):
-        """The page. A link with the one-time token sets the access cookie and redirects to the clean
-        address, so the token leaves the address bar. The session secret is never written into the page."""
+        """The page. It holds no secret, so it is public. A link with the one-time token redirects to
+        the page with the API token in the URL fragment. The page moves it to sessionStorage."""
         given = query.get("token", [""])[0]
         if given:
             if not self._use_link(app, given):
                 raise ApiError(403, "this link is wrong or was already used. Restart the server for a new link.")
             self.send_response(303)
-            self.send_header("Location", "/")
-            name = cookie_name(self.server.server_address[1])
-            self.send_header("Set-Cookie", "%s=%s; Path=/; HttpOnly; SameSite=Strict" % (name, app.token))
+            self.send_header("Location", "/#token=%s" % app.token)
             self.send_header("Content-Length", "0")
             self.end_headers()
             return
-        if not self._authorized():
-            raise ApiError(403, "open the page with the link that the server printed")
         full = os.path.join(app.web_dir, "index.html")
         if not os.path.isfile(full):
             raise ApiError(404, "no such file")
