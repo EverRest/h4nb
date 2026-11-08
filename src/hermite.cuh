@@ -194,7 +194,15 @@ H4_HD unsigned update_particle(const StepParams& p, bool is_center, d4 a1, d4 j1
     const double dtw = correct(x, v, a, j, a1, j1, double(p.T - t) * p.tick, p.eta);
     a = a1;
     j = j1;
-    lv = p.fixed_level >= 0 ? p.fixed_level : choose_level(dtw, p.dt_max, level, p.T, p.max_level, under);
+    // A step estimate that is not finite or not positive keeps the current level (issue A3). With no force (a1 = j1 = 0,
+    // so 0/0) this is normal: the level stays and there is no status bit, as in init_level().
+    if (p.fixed_level >= 0) {
+      lv = p.fixed_level;
+    } else if (!(dtw > 0) || h4_nonfinite(dtw)) {
+      lv = level;
+    } else {
+      lv = choose_level(dtw, p.dt_max, level, p.T, p.max_level, under);
+    }
     if (h4_nonfinite(x.x + x.y + x.z + v.x + v.y + v.z)) st |= kNaN;
   }
   if (under) st |= kDtUnderflow;
