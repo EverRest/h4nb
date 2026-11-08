@@ -1,6 +1,7 @@
 import bz2
 import gzip
 import io
+import lzma
 import os
 import tarfile
 import threading
@@ -48,12 +49,16 @@ def test_lists_runs_and_their_members(tmp_path):
     assert runs["slurm"] == ["slurm-7.out"]
 
 
-def test_reads_snapshot_bytes_without_writing_to_cache(tmp_path):
+def test_plain_read_uses_one_uncompressed_copy_in_cache(tmp_path):
+    path = _make_archive(str(tmp_path / "logs.tar.gz"))
     cache = tmp_path / "cache"
-    archive = Archive(_make_archive(str(tmp_path / "logs.tar.gz")), cache_dir=str(cache))
+    archive = Archive(path, cache_dir=str(cache))
 
     assert archive.read("run1", "frames/0001.snap") == b"H4NBSNAP-frame-1"
-    assert not cache.exists()  # A plain member is read from the stream, not unpacked.
+    copies = os.listdir(cache)
+    assert len(copies) == 1
+    with open(os.path.join(cache, copies[0]), "rb") as f, gzip.open(path) as g:
+        assert f.read() == g.read()  # The copy is the uncompressed tar, so reads seek to an offset.
 
 
 def test_plain_tar_member_is_read(tmp_path):
@@ -70,13 +75,42 @@ def test_compressed_member_is_returned_decompressed_and_cached_once(tmp_path):
     with tarfile.open(path, "w:gz") as tar:
         _add(tar, "h4nb_logs_x/run1/frames/0002.snap.gz", gzip.compress(b"H4NBSNAP-packed"))
         _add(tar, "h4nb_logs_x/run1/frames/0003.snap.bz2", bz2.compress(b"H4NBSNAP-bz2"))
+        _add(tar, "h4nb_logs_x/run1/frames/0004.snap.xz", lzma.compress(b"H4NBSNAP-xz"))
     cache = tmp_path / "cache"
     archive = Archive(path, cache_dir=str(cache))
 
     assert archive.read("run1", "frames/0002.snap.gz") == b"H4NBSNAP-packed"
     assert archive.read("run1", "frames/0002.snap.gz") == b"H4NBSNAP-packed"
     assert archive.read("run1", "frames/0003.snap.bz2") == b"H4NBSNAP-bz2"
-    assert len(os.listdir(cache)) == 2  # One cache file per member, no .tmp left.
+    assert archive.read("run1", "frames/0004.snap.xz") == b"H4NBSNAP-xz"
+    assert len(os.listdir(cache)) == 4  # Three members and the archive copy. No .tmp left.
+
+
+def test_cache_stays_within_its_size_limit(tmp_path):
+    path = str(tmp_path / "logs.tar.gz")
+    members = {"frames/%04d.snap.gz" % i: b"x" * 1000 + bytes([i]) for i in range(5)}
+    with tarfile.open(path, "w:gz") as tar:
+        for name, data in members.items():
+            _add(tar, "h4nb_logs_x/run1/" + name, gzip.compress(data))
+    cache = tmp_path / "cache"
+    archive = Archive(path, cache_dir=str(cache), max_cache_bytes=1)
+
+    for name, data in members.items():
+        assert archive.read("run1", name) == data  # The file just written is kept for this read.
+    assert len(os.listdir(cache)) <= 2  # The newest member and the archive copy.
+
+
+def test_no_eviction_while_cache_is_under_its_limit(tmp_path):
+    path = str(tmp_path / "logs.tar.gz")
+    with tarfile.open(path, "w:gz") as tar:
+        for i in range(5):
+            _add(tar, "h4nb_logs_x/run1/frames/%04d.snap.gz" % i, gzip.compress(b"x" * 100))
+    cache = tmp_path / "cache"
+    archive = Archive(path, cache_dir=str(cache), max_cache_bytes=10**9)
+
+    for i in range(5):
+        archive.read("run1", "frames/%04d.snap.gz" % i)
+    assert len(os.listdir(cache)) == 6  # Five members and the archive copy.
 
 
 def test_cache_of_old_archive_version_is_removed(tmp_path):
@@ -89,7 +123,7 @@ def test_cache_of_old_archive_version_is_removed(tmp_path):
     _replace(path, {"h4nb_logs_x/run1/frames/0002.snap.gz": gzip.compress(b"new")}, 1_000_060)
 
     assert archive.read("run1", "frames/0002.snap.gz") == b"new"
-    assert len(os.listdir(cache)) == 1
+    assert len(os.listdir(cache)) == 2  # The new member and the new archive copy. Old files are gone.
 
 
 def test_concurrent_first_reads_of_compressed_member_all_succeed(tmp_path):
@@ -152,8 +186,8 @@ def test_archive_replaced_during_read_is_read_again(tmp_path):
     real_stream = archive._stream
     replaced = []
 
-    def stream_then_replace(info):
-        data = real_stream(info)
+    def stream_then_replace(key, info):
+        data = real_stream(key, info)
         if not replaced:  # The archive changes after the index was built and the member was read.
             replaced.append(True)
             _replace(path, {"h4nb_logs_x/run1/frames/0001.snap": b"new"}, 1_000_060)
