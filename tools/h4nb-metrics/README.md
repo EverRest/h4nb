@@ -44,6 +44,26 @@ Open <http://localhost:3000>. The dashboard "h4nb runs" is the home dashboard. T
 
 Prometheus runs on `127.0.0.1:9090`. Grafana runs on `127.0.0.1:3000`.
 
+### Change the host ports
+
+Set these variables before `docker compose up`. Each variable has a default.
+
+| Variable | Default | Use |
+|---|---|---|
+| `GRAFANA_PORT` | 3000 | Host port of Grafana. |
+| `PROMETHEUS_PORT` | 9090 | Host port of Prometheus. |
+| `H4NB_VIEWER_PORT` | 8820 | Port of the h4nb-viz link in the dashboards. Set it before you run `build_dashboards.py`. |
+
+The container ports do not change. The ports stay on `127.0.0.1`.
+
+Example, if port 3000 is busy:
+
+```text
+GRAFANA_PORT=3100 docker compose up -d
+```
+
+Open <http://localhost:3100>. The Linux file uses the same variables for the listen address.
+
 On Linux, use the second compose file:
 
 ```text

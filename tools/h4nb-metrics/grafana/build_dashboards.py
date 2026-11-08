@@ -9,7 +9,9 @@ import os
 
 DS = {"type": "prometheus", "uid": "prometheus"}
 # links.md section 1. The field template uses the run of the clicked row.
-VIEWER_URL = "http://127.0.0.1:8820/#run=${__data.fields.run:percentencode}"
+# The viewer port comes from H4NB_VIEWER_PORT (default 8820, the default of `h4nb-viz serve`).
+VIEWER_PORT = os.environ.get("H4NB_VIEWER_PORT", "8820")
+VIEWER_URL = "http://127.0.0.1:%s/#run=${__data.fields.run:percentencode}" % VIEWER_PORT
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 STATE_MAPPINGS = [{"type": "value", "options": {

@@ -1,5 +1,6 @@
 # Prometheus and Grafana for h4nb-metrics (specs/002-run-metrics, FR-011, FR-019, FR-020).
-# Start:  docker compose up -d      Grafana: http://localhost:3000 (anonymous viewer access, admin/admin to edit)
+# Start:  docker compose up -d      Grafana: http://localhost:${GRAFANA_PORT:-3000} (anonymous viewer access, admin/admin to edit)
+# Host ports: GRAFANA_PORT (default 3000), PROMETHEUS_PORT (default 9090). Container ports do not change.
 # The exporter runs on the host: h4nb-metrics serve RUN_DIR... (port 9810).
 # On Linux, also give -f docker-compose.linux.yml (see README.md).
 services:
@@ -14,7 +15,7 @@ services:
       - ./backfill:/backfill:ro
       - prometheus-data:/prometheus
     ports:
-      - "127.0.0.1:9090:9090"
+      - "127.0.0.1:${PROMETHEUS_PORT:-9090}:9090"
     extra_hosts:
       - "host.docker.internal:host-gateway"
     restart: unless-stopped
@@ -31,7 +32,7 @@ services:
       - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
       - grafana-data:/var/lib/grafana
     ports:
-      - "127.0.0.1:3000:3000"
+      - "127.0.0.1:${GRAFANA_PORT:-3000}:3000"
     depends_on:
       - prometheus
     restart: unless-stopped

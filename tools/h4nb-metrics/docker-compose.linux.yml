@@ -11,7 +11,7 @@ services:
       - --config.file=/etc/prometheus/prometheus.yml
       - --storage.tsdb.path=/prometheus
       - --storage.tsdb.retention.time=5y
-      - --web.listen-address=127.0.0.1:9090
+      - --web.listen-address=127.0.0.1:${PROMETHEUS_PORT:-9090}
     volumes:
       - ./prometheus/prometheus-linux.yml:/etc/prometheus/prometheus.yml:ro
   grafana:
@@ -19,4 +19,5 @@ services:
     ports: !reset []
     environment:
       GF_SERVER_HTTP_ADDR: 127.0.0.1
-      PROMETHEUS_URL: http://127.0.0.1:9090
+      GF_SERVER_HTTP_PORT: ${GRAFANA_PORT:-3000}
+      PROMETHEUS_URL: http://127.0.0.1:${PROMETHEUS_PORT:-9090}
