@@ -17,9 +17,10 @@ int main() {
   for (int i = 0; i < 16; ++i) u.bytes[i] = static_cast<char>(i);
   CHECK(h4nb::device_info::uuid_hex(u) == "000102030405060708090a0b0c0d0e0f");
   // High-bit bytes must not sign-extend through char (e.g. 0xab -> "ab", not "ff").
-  u.bytes[0] = static_cast<char>(0xab);
-  u.bytes[15] = static_cast<char>(0xff);
-  CHECK(h4nb::device_info::uuid_hex(u) == "ab0102030405060708090a0b0c0d0eff");
+  cudaUUID_t hi = u;
+  hi.bytes[0] = static_cast<char>(0xab);
+  hi.bytes[15] = static_cast<char>(0xff);
+  CHECK(h4nb::device_info::uuid_hex(hi) == "ab0102030405060708090a0b0c0d0eff");
 
   cudaDeviceProp prop{};
   std::memset(&prop, 0, sizeof prop);
