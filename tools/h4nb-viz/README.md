@@ -35,7 +35,7 @@ Start the page for the run:
 h4nb-viz serve demo
 ```
 
-The browser opens at `http://127.0.0.1:8820/`. Select the run `demo` in the list on the left.
+The server prints a link with a token, and the browser opens it. The token is needed for every request except the page itself, so other programs cannot read the runs or write files. Select the run `demo` in the list on the left.
 
 ## Commands
 

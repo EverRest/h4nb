@@ -6,6 +6,7 @@ The page draws them. Errors are JSON objects: {"error": "<text>"}.
 from __future__ import annotations
 
 import hmac
+import http.cookies
 import json
 import mimetypes
 import os
@@ -28,6 +29,7 @@ from .snapshots import (FIELD_MASS, FIELD_POS, FIELD_VEL, Snapshot, SubsetCache,
                         list_frames)
 from .tables import SERIES_COLUMNS, read_series
 
+COOKIE_NAME = "h4nb_token"  # The access cookie. It is HttpOnly and SameSite=Strict.
 MAX_EXPORT_BYTES = 1 << 30  # One export file can be 1 GiB at most.
 EXPORT_EXTENSIONS = (".webm", ".mp4", ".png", ".svg")
 WEB_DIR = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "web"))
@@ -245,14 +247,26 @@ class Handler(BaseHTTPRequestHandler):
         if self.headers.get("Host") not in ("127.0.0.1:%d" % port, "localhost:%d" % port):
             raise ApiError(403, "the Host header is not allowed")
 
+    def _token_ok(self, given: str) -> bool:
+        return bool(given) and hmac.compare_digest(given.encode("utf-8"), self.server.app.token.encode("utf-8"))
+
+    def _authorized(self) -> bool:
+        """True when the request has the token in the header or in the access cookie."""
+        jar = http.cookies.SimpleCookie()
+        try:
+            jar.load(self.headers.get("Cookie", ""))
+        except http.cookies.CookieError:
+            pass
+        cookie = jar[COOKIE_NAME].value if COOKIE_NAME in jar else ""
+        return self._token_ok(self.headers.get("X-H4NB-Token", "")) or self._token_ok(cookie)
+
     def _check_token(self):
-        """Require the token of this server for every request except the page and the static files.
+        """Require access for every request except the page (it checks itself) and the static files.
         The path is decoded the same way as in _route, so an encoded path cannot skip the check."""
         path = urllib.parse.unquote(urllib.parse.urlsplit(self.path).path)
         if path == "/" or path.startswith("/web/"):
             return
-        given = self.headers.get("X-H4NB-Token", "")
-        if not hmac.compare_digest(given.encode("utf-8"), self.server.app.token.encode("utf-8")):
+        if not self._authorized():
             raise ApiError(403, "the token is missing or wrong")
 
     def do_GET(self):
@@ -272,7 +286,7 @@ class Handler(BaseHTTPRequestHandler):
         query = urllib.parse.parse_qs(url.query)
         app = self.server.app
         if path == "/":
-            return self._index(app)
+            return self._index(app, query)
         if path.startswith("/web/"):
             return self._file(app.web_dir, path[len("/web/"):])
         if path == "/api/status":
@@ -337,13 +351,23 @@ class Handler(BaseHTTPRequestHandler):
         path = save_export(self.server.app.export_dir, name, data)
         self._json(200, {"path": path, "mp4": False})  # MP4 conversion is added in T026.
 
-    def _index(self, app: App):
-        """The page. The token is written into it, so the page can call the API."""
+    def _index(self, app: App, query: Dict[str, List[str]]):
+        """The page. A link with the token sets the access cookie and redirects to the clean address,
+        so the token leaves the address bar. The token is never written into the page."""
+        if self._token_ok(query.get("token", [""])[0]):
+            self.send_response(303)
+            self.send_header("Location", "/")
+            self.send_header("Set-Cookie", "%s=%s; Path=/; HttpOnly; SameSite=Strict" % (COOKIE_NAME, app.token))
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+        if not self._authorized():
+            raise ApiError(403, "open the page with the link that the server printed")
         full = os.path.join(app.web_dir, "index.html")
         if not os.path.isfile(full):
             raise ApiError(404, "no such file")
         with open(full, "rb") as f:
-            body = f.read().replace(b"__H4NB_TOKEN__", app.token.encode("utf-8"))
+            body = f.read()
         self._bytes(200, "text/html; charset=utf-8", body, {"Cache-Control": "no-store"})
 
     def _file(self, base: str, rel: str):
@@ -380,8 +404,8 @@ def make_server(root: str, port: int = 8820, export_dir: Optional[str] = None, w
 def serve(root: str, port: int = 8820, export_dir: Optional[str] = None, open_browser: bool = True,
           prometheus: Optional[str] = None, grafana_url: Optional[str] = None) -> None:
     httpd = make_server(root, port, export_dir, prometheus=prometheus, grafana_url=grafana_url)
-    url = "http://127.0.0.1:%d/" % httpd.server_address[1]
-    print("h4nb-viz: serving %s at %s (Ctrl+C stops the server)" % (httpd.app.root, url), flush=True)
+    url = "http://127.0.0.1:%d/?token=%s" % (httpd.server_address[1], httpd.app.token)
+    print("h4nb-viz: serving %s. Open this link (Ctrl+C stops the server):\n  %s" % (httpd.app.root, url), flush=True)
     if open_browser:
         webbrowser.open(url)
     try:

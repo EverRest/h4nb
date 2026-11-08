@@ -23,7 +23,7 @@ _TOKEN = {"value": ""}  # The token of the running test server.
 def server(fake_root, tmp_path):
     web = tmp_path / "web"
     web.mkdir()
-    (web / "index.html").write_text('<!doctype html><meta name="h4nb-token" content="__H4NB_TOKEN__"><title>h4nb-viz</title>')
+    (web / "index.html").write_text("<!doctype html><title>h4nb-viz</title>")
     (web / "app.js").write_text("console.log(1);")
     httpd = make_server(fake_root, port=0, export_dir=str(tmp_path / "exports"), web_dir=str(web))
     _TOKEN["value"] = getattr(httpd.app, "token", "")
@@ -394,11 +394,49 @@ def test_export_without_token_is_refused(server):
     assert status == 403 and "error" in body
 
 
-def test_index_page_carries_the_token_and_needs_none(server):
+def test_page_without_token_is_refused(server):
     base, _ = server
-    status, _, body = get(base, "/", token="")
+    assert get(base, "/", token="")[0] == 403
+
+
+def test_page_does_not_contain_the_token(server):
+    base, _ = server
+    status, _, body = get(base, "/")
     assert status == 200
-    assert _TOKEN["value"].encode() in body
+    assert _TOKEN["value"].encode() not in body
+
+
+def raw_get(port, path, headers):
+    """GET without following redirects. Return (status, headers, body)."""
+    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+    conn.request("GET", path, headers=dict(headers, Host="127.0.0.1:%d" % port))
+    response = conn.getresponse()
+    body = response.read()
+    conn.close()
+    return response.status, response, body
+
+
+def test_link_with_token_sets_http_only_cookie_and_redirects(server):
+    base, httpd = server
+    port = httpd.server_address[1]
+    status, response, _ = raw_get(port, "/?token=" + _TOKEN["value"], {})
+    cookie = response.getheader("Set-Cookie")
+    assert status == 303 and response.getheader("Location") == "/"
+    assert cookie.startswith("h4nb_token=" + _TOKEN["value"])
+    assert "HttpOnly" in cookie and "SameSite=Strict" in cookie and "Path=/" in cookie
+
+
+def test_link_with_wrong_token_is_refused(server):
+    base, httpd = server
+    status, response, _ = raw_get(httpd.server_address[1], "/?token=guess", {})
+    assert status == 403 and response.getheader("Set-Cookie") is None
+
+
+def test_cookie_authorizes_api_requests(server):
+    base, httpd = server
+    port = httpd.server_address[1]
+    assert raw_get(port, "/api/status", {"Cookie": "h4nb_token=" + _TOKEN["value"]})[0] == 200
+    assert raw_get(port, "/api/status", {"Cookie": "h4nb_token=guess"})[0] == 403
 
 
 def test_static_files_need_no_token(server):
