@@ -183,8 +183,16 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, format, *args):  # Keep the terminal quiet. Errors go to the status line.
         pass
 
+    def _check_host(self):
+        """Accept only the names of this server. This blocks DNS rebinding: a web page on another name
+        must not read the runs through the browser."""
+        port = self.server.server_address[1]
+        if self.headers.get("Host") not in ("127.0.0.1:%d" % port, "localhost:%d" % port):
+            raise ApiError(403, "the Host header is not allowed")
+
     def do_GET(self):
         try:
+            self._check_host()
             self._route()
         except ApiError as err:
             self._json(err.status, {"error": err.message})
@@ -225,6 +233,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         try:
+            self._check_host()
             self._post_route()
         except ApiError as err:
             self._json(err.status, {"error": err.message})

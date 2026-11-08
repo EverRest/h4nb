@@ -215,3 +215,55 @@ def test_export_rejects_bad_names(server):
     assert post(base, "/api/export?name=run.exe", b"x", origin=base)[0] == 400
     assert post(base, "/api/export", b"x", origin=base)[0] == 400
     assert post(base, "/api/nothing", b"x", origin=base)[0] == 404
+
+
+def call(base, path, method="GET", host=None, origin=None, body=b""):
+    """Return (status, body) for one request. `host` sets the Host header, to test DNS rebinding."""
+    headers = {"Content-Type": "application/octet-stream"}
+    if host is not None:
+        headers["Host"] = host
+    if origin is not None:
+        headers["Origin"] = origin
+    data = body if method == "POST" else None
+    request = urllib.request.Request(base + path, data=data, headers=headers, method=method)
+    try:
+        with urllib.request.urlopen(request, timeout=10) as r:
+            return r.status, json.loads(r.read() or b"null")
+    except urllib.error.HTTPError as err:
+        return err.code, json.loads(err.read() or b"null")
+
+
+def test_get_with_foreign_host_is_refused(server):
+    base, httpd = server
+    port = httpd.server_address[1]
+    assert call(base, "/api/status", host="evil.example:%d" % port)[0] == 403
+    assert call(base, "/api/runs", host="attacker.test")[0] == 403
+
+
+def test_get_with_right_host_is_served(server):
+    base, httpd = server
+    port = httpd.server_address[1]
+    assert call(base, "/api/status", host="127.0.0.1:%d" % port)[0] == 200
+    assert call(base, "/api/status", host="localhost:%d" % port)[0] == 200
+
+
+def test_get_with_right_name_but_wrong_port_is_refused(server):
+    base, httpd = server
+    port = httpd.server_address[1]
+    assert call(base, "/api/status", host="127.0.0.1:%d" % (port + 1))[0] == 403
+
+
+def test_post_with_foreign_host_is_refused(server):
+    base, httpd = server
+    port = httpd.server_address[1]
+    status, body = call(base, "/api/export?name=x.png", method="POST", host="evil.example:%d" % port,
+                        origin=base, body=b"1")
+    assert status == 403 and "error" in body
+
+
+def test_post_with_right_host_is_accepted(server, tmp_path):
+    base, httpd = server
+    port = httpd.server_address[1]
+    status, body = call(base, "/api/export?name=ok.png", method="POST", host="localhost:%d" % port,
+                        origin=base, body=b"1")
+    assert status == 200 and body["path"].endswith("ok.png")
