@@ -40,10 +40,10 @@ Two Grafana dashboards ("h4nb runs" and "h4nb past runs") and a `docker-compose.
 | II. Speed by measurement | No change to the hot path. The exporter reads files from another process. | Pass |
 | III. Library first, small API | No change to the public API. The package is a client of the output files, not of the library. | Pass |
 | IV. Deterministic results | No change to the simulation. The backfill is deterministic (FR-017). | Pass |
-| V. Simplicity | The dependency rule of principle V applies to the library. The package adds no dependency to the library build (FR-002). Its Python dependencies stay in its own `pyproject.toml`. | Pass, see the open item below |
-| Development workflow: tests in `tests/` with CTest | The Python tests are in `tools/h4nb-metrics/tests/` and use `pytest`. They are not CTest tests. | Deviation, see Complexity Tracking |
+| V. Simplicity | Constitution 2.0.1: the dependency rule applies to the library and its CMake/Spack build. A separate tool in `tools/` can have its own dependencies. The package does not link to the library and adds nothing to the build (FR-002). | Pass |
+| Development workflow: tests | Constitution 2.0.1: a separate tool keeps its tests next to it and can use `pytest`. The tests run without a GPU. | Pass |
 
-**Open item for the user**: the constitution does not mention tools in other languages. A PATCH amendment can say: "Tools outside the library (for example `tools/h4nb-metrics`) can have their own dependencies and test framework. They MUST NOT add a dependency to the library build." This needs the user's approval (Governance).
+The constitution amendment 2.0.1 (approved by the user on 2026-11-08) covers separate tools in `tools/`.
 
 ## Project Structure
 
@@ -114,5 +114,4 @@ A prototype of all parts exists in the branch `develop`. It was checked as follo
 
 | Deviation | Why needed | Simpler alternative rejected because |
 |---|---|---|
-| `pytest` tests outside CTest | The package is Python. CTest would only call `pytest`. | A CTest wrapper adds a Python requirement to the C++ build (FR-002). |
 | Docker for Prometheus and Grafana | The user asked for Grafana. Docker gives a setup with one command. | A native install differs on each OS. It is still possible: the README lists the two config files. |
