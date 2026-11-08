@@ -1,6 +1,7 @@
 """Command line of h4nb-viz.
 
   h4nb-viz fake OUT_DIR [--n 20000] [--snaps 60] [--t-end 6.3125]
+  h4nb-viz thin RUN_DIR OUT_DIR [--max-points 200000] [--seed 1]
   h4nb-viz serve ROOT [--port 8820] [--export-dir DIR] [--no-browser] [--prometheus URL] [--grafana URL]
 """
 from __future__ import annotations
@@ -12,6 +13,7 @@ from typing import List, Optional
 
 from .fake import write_fake_run
 from .server import serve
+from .thin import thin_run
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -23,6 +25,12 @@ def build_parser() -> argparse.ArgumentParser:
     fake.add_argument("--n", type=int, default=20000, help="Number of particles, the central body included.")
     fake.add_argument("--snaps", type=int, default=60, help="Number of numbered snapshots.")
     fake.add_argument("--t-end", type=float, default=6.3125, help="End time of the run.")
+
+    thin = sub.add_parser("thin", help="Write a thinned copy of a run, for a light file to view.")
+    thin.add_argument("run_dir", help="Run directory to thin.")
+    thin.add_argument("out_dir", help="Directory of the thinned run.")
+    thin.add_argument("--max-points", type=int, default=200000, help="Most particles per snapshot. Default: 200000.")
+    thin.add_argument("--seed", type=int, default=1, help="Seed of the particle subset. Default: 1.")
 
     srv = sub.add_parser("serve", help="Serve the runs under ROOT on 127.0.0.1.")
     srv.add_argument("root", help="Directory that holds the run directories.")
@@ -43,6 +51,12 @@ def main(argv: Optional[List[str]] = None) -> int:
         except ValueError as err:
             parser.error(str(err))
         print("h4nb-viz: wrote the fake run to %s" % os.path.abspath(args.out_dir))
+        return 0
+    if args.command == "thin":
+        if not os.path.isdir(args.run_dir):
+            parser.error("RUN_DIR is not a directory: %s" % args.run_dir)
+        written = thin_run(args.run_dir, args.out_dir, max_points=args.max_points, seed=args.seed)
+        print("h4nb-viz: wrote %d thin snapshots to %s" % (len(written), os.path.abspath(args.out_dir)))
         return 0
     if not os.path.isdir(args.root):
         parser.error("ROOT is not a directory: %s" % args.root)

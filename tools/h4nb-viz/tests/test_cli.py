@@ -1,4 +1,5 @@
 import os
+import struct
 
 import pytest
 
@@ -36,4 +37,30 @@ def test_fake_writes_a_run(tmp_path, capsys):
 def test_fake_rejects_too_few_particles(tmp_path):
     with pytest.raises(SystemExit) as err:
         cli.main(["fake", str(tmp_path / "x"), "--n", "1"])
+    assert err.value.code == 2
+
+
+def test_thin_writes_thin_files(tmp_path, capsys):
+    run = str(tmp_path / "run")
+    cli.main(["fake", run, "--n", "200", "--snaps", "2", "--t-end", "0.5"])
+    out = str(tmp_path / "thin")
+    assert cli.main(["thin", run, out, "--max-points", "50", "--seed", "2"]) == 0
+    files = sorted(f for f in os.listdir(out) if f.endswith(".thin"))
+    assert files == ["snap_000000.thin", "snap_000001.thin", "snap_final.thin"]
+    with open(os.path.join(out, "snap_final.thin"), "rb") as f:
+        _, _, seed, k, _, _ = struct.unpack("<8sIIQQd", f.read(40))
+    assert (seed, k) == (2, 50)
+    assert "wrote 3 thin snapshots" in capsys.readouterr().out
+
+
+def test_thin_defaults(monkeypatch, tmp_path):
+    calls = []
+    monkeypatch.setattr(cli, "thin_run", lambda run, out, **kw: calls.append((run, out, kw)) or [])
+    cli.main(["thin", str(tmp_path), str(tmp_path / "o")])
+    assert calls == [(str(tmp_path), str(tmp_path / "o"), {"max_points": 200000, "seed": 1})]
+
+
+def test_thin_rejects_missing_run(tmp_path):
+    with pytest.raises(SystemExit) as err:
+        cli.main(["thin", str(tmp_path / "missing"), str(tmp_path / "o")])
     assert err.value.code == 2

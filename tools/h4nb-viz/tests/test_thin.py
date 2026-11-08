@@ -127,3 +127,15 @@ def test_no_tmp_file_left(run, tmp_path):
     out = str(tmp_path / "out")
     thin_run(run, out, max_points=50, seed=1)
     assert not [f for f in os.listdir(out) if f.endswith(".tmp")]
+
+
+RUN_RECORDS = ["config.used", "run_info.txt", "energy.dat", "momentum.dat", "timesteps.dat",
+               "performance.dat", "energy_periods.dat"]
+
+
+def test_copies_tables_and_records(run, tmp_path):
+    out = str(tmp_path / "out")
+    thin_run(run, out, max_points=50, seed=1)
+    for name in RUN_RECORDS:
+        with open(os.path.join(run, name), "rb") as a, open(os.path.join(out, name), "rb") as b:
+            assert a.read() == b.read(), name

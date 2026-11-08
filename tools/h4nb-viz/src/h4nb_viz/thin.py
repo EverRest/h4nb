@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import struct
 from typing import List
 
@@ -14,15 +15,28 @@ THIN_HEADER = struct.Struct("<8sIIQQd")  # magic, version, seed, k, n, time: 40 
 THIN_MAGIC = b"H4NBTHIN"
 
 
+def copy_run_files(run_dir: str, out_dir: str) -> None:
+    """Copy config.used, run_info.txt and the .dat tables, so out_dir is a complete run directory."""
+    names = [n for n in os.listdir(run_dir) if n.endswith(".dat")] + ["config.used", "run_info.txt"]
+    for name in names:
+        src = os.path.join(run_dir, name)
+        if not os.path.isfile(src):
+            continue
+        dst = os.path.join(out_dir, name)
+        shutil.copyfile(src, dst + ".tmp")
+        os.replace(dst + ".tmp", dst)
+
+
 def thin_run(run_dir: str, out_dir: str, max_points: int = 200000, seed: int = 1) -> List[str]:
     """Write one .thin file per snapshot of run_dir into out_dir. Return the paths written.
 
     The subset comes from the IDs of the first snapshot, so it is the same in every frame.
     """
+    os.makedirs(out_dir, exist_ok=True)
+    copy_run_files(run_dir, out_dir)
     frames = list_frames(run_dir)
     if not frames:
         return []
-    os.makedirs(out_dir, exist_ok=True)
     ids0 = np.asarray(frames[0].array("id"))
     central = central_id_of(run_dir)
     idx = subset_indices(ids0, central, max_points, seed)
