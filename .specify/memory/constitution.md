@@ -1,13 +1,14 @@
 <!--
 Sync Impact Report
-- Version change: 1.1.0 → 2.0.0 (MAJOR: principle V allows an optional MPI dependency; the single-node limit is removed)
-- Principles modified: IV (Deterministic Results: bit-identical scope), V (Simplicity: optional MPI)
-- Sections modified: Hardware & Toolchain Constraints (several nodes, aarch64, GTX 1060 excluded, role of RTX-class GPUs)
+- Version change: 2.0.0 → 2.0.1 (PATCH: clarification of the scope of principle V and of the test rule)
+- Principles modified: V (Simplicity: the dependency rule applies to the library and its CMake/Spack build; separate tools in tools/ can have their own dependencies)
+- Sections modified: Development Workflow (tests of separate tools)
 - Sections added: none
 - Removed sections: none
-- Approved by the user on 2026-11-07. Text source: docs/multi-node-design.md section 7.
+- Approved by the user on 2026-11-08. Reason: specs/002-run-metrics (Python package tools/h4nb-metrics) and specs/003 (h4nb-viz).
 - Templates checked: plan-template.md, spec-template.md, tasks-template.md (no change needed)
 - Deferred TODOs: none
+- Previous: 1.1.0 → 2.0.0 (MAJOR: optional MPI, several nodes), approved 2026-11-07.
 -->
 
 # h4nb Constitution
@@ -51,6 +52,7 @@ Rationale: the TZ requires reproducible runs (requirement 13). Deterministic res
 ### V. Simplicity (YAGNI)
 
 - The dependencies are the CUDA toolkit (CUB and Thrust included) and the C++ standard library. The MPI library is an optional dependency. It is used only when the build sets `H4NB_MPI=ON`. No other dependency is allowed.
+- This dependency rule applies to the library, its C++/CUDA tools and its CMake and Spack build. A separate tool in `tools/` (for example a Python package) can have its own dependencies in its own package file. Such a tool MUST NOT link to the library, MUST NOT add a dependency or a step to the CMake or Spack build, and MUST NOT change the files that the library writes.
 - Use the shortest correct solution. A deliberate shortcut with a known limit MUST have a `ponytail:` comment that names the limit and the upgrade path.
 
 Rationale: a small codebase is simple to check against the physics.
@@ -65,6 +67,7 @@ Rationale: a small codebase is simple to check against the physics.
 ## Development Workflow
 
 - **v1 has automated tests.** They live in `tests/`. They are plain executables with CHECK/CHECK_NEAR macros (no external framework), and CTest registers them. `make test` runs them all. Tests labelled `cpu` MUST run without a GPU. Tests labelled `gpu` MUST run on a GPU machine.
+- A separate tool in `tools/` with its own package file keeps its tests next to it and can use the usual test framework of its language (for example `pytest`). These tests MUST run without a GPU. CI runs them only when the tool has a CI job.
 - The thresholds in the tests MUST NOT be loosened to make a test pass. A failing test is a finding: find the cause, record the measured value, and report it to the user.
 - The acceptance runs in `specs/001-hermite-nbody-lib/quickstart.md` are still required. They MUST be done on a GPU machine and recorded in `docs/results.md` before a release. Automated tests do not replace them.
 - CI (GitHub Actions) MUST compile the library and the tools on each push and MUST run the `cpu` tests. A CI build without a GPU proves that the code compiles and that the CPU reference is correct. It does not prove that the GPU code is correct.
@@ -76,4 +79,4 @@ Rationale: a small codebase is simple to check against the physics.
 - An amendment needs: a written change to this file, a version bump, and the user's approval.
 - Versioning: MAJOR for the removal or redefinition of a principle; MINOR for a new principle or section; PATCH for wording.
 
-**Version**: 2.0.0 | **Ratified**: 2026-11-07 | **Last Amended**: 2026-11-07
+**Version**: 2.0.1 | **Ratified**: 2026-11-07 | **Last Amended**: 2026-11-08
