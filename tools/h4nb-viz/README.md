@@ -87,13 +87,13 @@ Use `--prometheus URL` to read the curves from Prometheus. The server uses the m
 - `source=prometheus`: Prometheus only. The server returns 503 when Prometheus does not answer.
 - `source=files`: the files only.
 
-The page refreshes the curves of a running run every 15 s. It reads the frame list every 5 s. It reads the server status every 5 s. The status line shows `Prometheus: on`, `off` or `unknown`. Stop of Prometheus shows `off` within about 10 s. Use `--grafana URL` to show the link "Open in Grafana".
+The page refreshes the curves of a running run every 15 s. It reads the frame list every 5 s. It reads the server status every 5 s. The status line shows `Prometheus: on`, `off` or `unknown`. Prometheus shows `off` within about 20 s after it stops. Use `--grafana URL` to show the link "Open in Grafana".
 
 A link with `#run=<label>` opens the run whose Prometheus label is the value.
 
 Status of the manual check (T023):
 
-- Done: the status line shows `Prometheus: on` with a stub Prometheus. It shows `off` after the stub stops. The Grafana link has its `href`. The page raises no script error in headless Chrome.
+- Done: the status line shows `Prometheus: on` with a stub Prometheus. It shows `off` after the stub stops. The Grafana link has its `href`. A `#run=` link with no matching label shows the no-match message. The page raises no script error in headless Chrome.
 - Open: the live update of a running run (a new point of D1 after 15 s). Open: the stop of the exporter in the stack of specs/002. Both need a running run and the Docker stack.
 
 ## Resource use

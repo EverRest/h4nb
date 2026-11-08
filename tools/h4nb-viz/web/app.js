@@ -9,7 +9,7 @@ import { drawCard } from "./card.js";
 const PLAY_FPS = 6; // Frames per second while playing.
 const RUN_POLL_MS = 5000; // The run list is read again this often. A running run gets a new frame list at this rate.
 const SERIES_MS = 15000; // A running run gets new curves this often.
-const STATUS_MS = 5000; // The server status is read this often. Stop shows within about 10 s.
+const STATUS_MS = 5000; // The server status is read this often. Stop shows within about 20 s (ready check of 15 s).
 const THEME_KEY = "h4nb-viz.theme";
 const PLOTS_KEY = "h4nb-viz.plots";
 
@@ -44,8 +44,9 @@ function renderSources() {
   const series = state.seriesSource ? `Curves: ${state.seriesSource}` : "";
   $("sources").textContent = [promText, series].filter(Boolean).join(" · ");
   const link = $("grafana");
-  link.hidden = !(prom && prom.grafana_url);
-  if (!link.hidden) link.href = prom.grafana_url;
+  const url = prom && prom.grafana_url;
+  link.hidden = !(url && /^https?:\/\//.test(url)); // Only web links. A javascript: URL is not shown.
+  if (!link.hidden) link.href = url;
 }
 
 async function fetchJson(url) {
@@ -85,6 +86,10 @@ function applyHash(runs) {
   }
   const matches = runs.filter((r) => r.prom_label === value);
   if (matches.length === 1) {
+    if (!state.view) {
+      setStatus("The 3D view is not available in this browser, so the run cannot be shown.");
+      return;
+    }
     selectRun(matches[0].run).catch((e) => setStatus(e.message));
   } else if (matches.length === 0) {
     setStatus(`No run with label ${value} in this root directory. Check the root directory of h4nb-viz.`);
@@ -113,12 +118,14 @@ async function refreshRuns() {
 
 // The frame list of the selected run. A running run gets new snapshots, so the slider follows them.
 async function refreshFrames() {
-  const detail = await fetchJson(`/api/runs/${encodeURIComponent(state.run)}`);
+  const run = state.run;
+  const detail = await fetchJson(`/api/runs/${encodeURIComponent(run)}`);
+  if (state.run !== run) return; // The user selected another run while this request was in flight.
   if (detail.frames.length === state.detail.frames.length) return;
   state.detail = detail;
   $("slider").max = String(Math.max(0, detail.frames.length - 1));
   document.body.classList.toggle("single", detail.frames.length <= 1);
-  if (!state.frame && detail.frames.length > 0) await showFrame(0, true); // The first frame arrived.
+  if (!state.frame && state.view && detail.frames.length > 0) await showFrame(0, true); // The first frame arrived.
 }
 
 // The curves of a running run. The plots are drawn again with the new samples.
@@ -166,6 +173,8 @@ async function selectRun(name) {
   $("slider").max = String(Math.max(0, frames.length - 1));
   $("pres-name").textContent = name;
   if (frames.length === 0) {
+    state.plots.clear(); // The curves of the previous run must not stay under this name.
+    state.seriesSource = null;
     setStatus(`${name} has no snapshot.`);
     return;
   }
@@ -174,6 +183,8 @@ async function selectRun(name) {
     const source = await state.plots.load(name, detail.config.G);
     if (source !== null && state.run === name) state.seriesSource = source;
   } catch (error) {
+    state.plots.clear();
+    state.seriesSource = null;
     setStatus(`Plots: ${error.message}`);
   }
   renderSources();

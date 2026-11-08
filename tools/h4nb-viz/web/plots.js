@@ -124,6 +124,8 @@ function derive(series) {
   return series;
 }
 
+const SERIES_TIMEOUT_MS = 20000; // The curves of one run must arrive within this time.
+
 export class Plots {
   constructor(container, { onSeek }) {
     this.container = container;
@@ -145,9 +147,17 @@ export class Plots {
     const generation = ++this.generation;
     const names = [...new Set([...PANELS.flatMap((p) => p.names), ...HELPER_SERIES])];
     const selected = names.filter((n) => n !== "period_incomplete").join(",");
-    const response = await fetch(`/api/runs/${encodeURIComponent(run)}/series?names=${selected}`);
-    const body = await response.json();
-    if (!response.ok) throw new Error(body.error || `HTTP ${response.status}`);
+    // A stalled server must not stop the refresh for good: the request is cut after SERIES_TIMEOUT_MS.
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), SERIES_TIMEOUT_MS);
+    let body;
+    try {
+      const response = await fetch(`/api/runs/${encodeURIComponent(run)}/series?names=${selected}`, { signal: controller.signal });
+      body = await response.json();
+      if (!response.ok) throw new Error(body.error || `HTTP ${response.status}`);
+    } finally {
+      clearTimeout(timer);
+    }
     if (generation !== this.generation) return null;
     this.clear(); // Clear only after a good answer, so a failed refresh keeps the old curves.
     const series = derive(body.series);
