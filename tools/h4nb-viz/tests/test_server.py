@@ -1,5 +1,7 @@
 import json
 import math
+import os
+import re
 import threading
 import urllib.error
 import urllib.request
@@ -8,6 +10,7 @@ import numpy as np
 import pytest
 
 from h4nb_viz.server import json_list, make_server
+from h4nb_viz.fake import write_fake_run
 from h4nb_viz.snapshots import FRAME_HEADER, FRAME_MAGIC
 
 
@@ -267,3 +270,91 @@ def test_post_with_right_host_is_accepted(server, tmp_path):
     status, body = call(base, "/api/export?name=ok.png", method="POST", host="localhost:%d" % port,
                         origin=base, body=b"1")
     assert status == 200 and body["path"].endswith("ok.png")
+
+# Prometheus (specs/003 T022). The run eta~run1 gets the start time of the fake h4nb_run_info series.
+START = "2026-11-08T10:00:00Z"
+
+
+def align_start(run_dir, start):
+    """Set start_utc of run_info.txt, so that the run matches the fake Prometheus."""
+    path = os.path.join(run_dir, "run_info.txt")
+    with open(path, encoding="utf-8") as f:
+        text = f.read()
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(re.sub(r"start_utc: .*", "start_utc: " + start, text))
+
+
+@pytest.fixture
+def prom_server(fake_root, tmp_path, fake_prometheus):
+    align_start(os.path.join(fake_root, "eta", "run1"), START)
+    web = tmp_path / "web"
+    web.mkdir()
+    (web / "index.html").write_text("<!doctype html><title>h4nb-viz</title>")
+    httpd = make_server(fake_root, port=0, export_dir=str(tmp_path / "exports"), web_dir=str(web),
+                        prometheus=fake_prometheus.url, grafana_url="http://127.0.0.1:3000")
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    yield "http://127.0.0.1:%d" % httpd.server_address[1], fake_prometheus
+    httpd.shutdown()
+    httpd.server_close()
+
+
+def runs_by_name(base):
+    return {r["run"]: r for r in get_json(base, "/api/runs")[1]}
+
+
+def test_runs_in_prometheus(prom_server):
+    base, _ = prom_server
+    run = runs_by_name(base)["eta~run1"]
+    assert run["in_prometheus"] is True and run["prom_label"] == "eta/run1"
+
+
+def test_run_without_match(prom_server):
+    base, _ = prom_server
+    run = runs_by_name(base)["flat"]  # Its start time is not in the fake data.
+    assert run["in_prometheus"] is False and run["prom_label"] is None
+
+
+def test_full_label_is_matched_not_its_last_part(prom_server, fake_root):
+    base, _ = prom_server
+    scan = os.path.join(fake_root, "scan", "run1")
+    write_fake_run(scan, n=50, snaps=1, t_end=0.5, seed=5)
+    align_start(scan, "2026-11-08T11:00:00Z")
+    runs = runs_by_name(base)
+    assert runs["scan~run1"]["prom_label"] == "scan/run1"
+    assert runs["eta~run1"]["prom_label"] == "eta/run1"
+
+
+def test_backfill_only_run_not_in_prometheus(prom_server):
+    base, fake = prom_server
+    fake.info_file = "prom_run_info_backfill.json"
+    run = runs_by_name(base)["eta~run1"]
+    assert run["in_prometheus"] is False
+
+
+def test_series_source_auto_uses_prometheus(prom_server):
+    base, _ = prom_server
+    status, body = get_json(base, "/api/runs/eta~run1/series?names=energy_rel_err&source=auto")
+    assert status == 200 and body["source"] == "prometheus"
+    assert body["series"]["energy_rel_err"]["metric"] == "h4nb_energy_rel_err"
+    assert body["series"]["energy_rel_err"]["x"] == [0.0, 0.25, 0.5, 1.0]
+
+
+def test_series_source_auto_falls_back(prom_server):
+    base, fake = prom_server
+    fake.stop()
+    status, body = get_json(base, "/api/runs/eta~run1/series?names=energy_rel_err&source=auto")
+    assert status == 200 and body["source"] == "files"
+
+
+def test_series_prometheus_503(prom_server):
+    base, fake = prom_server
+    fake.stop()
+    status, body = get_json(base, "/api/runs/eta~run1/series?names=energy_rel_err&source=prometheus")
+    assert status == 503 and "error" in body
+
+
+def test_series_origin_filter(prom_server):
+    base, fake = prom_server
+    get_json(base, "/api/runs/eta~run1/series?names=energy_rel_err&source=auto")
+    assert all('origin!="backfill"' in r["query"][0] for r in fake.requests)
+    assert fake.requests  # The query did reach the fake.

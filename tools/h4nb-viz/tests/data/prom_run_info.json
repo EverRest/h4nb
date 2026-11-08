@@ -1,0 +1,6 @@
+{"status": "success", "data": {"resultType": "vector", "result": [
+  {"metric": {"__name__": "h4nb_run_info", "run": "eta/run1", "start_utc": "2026-11-08T10:00:00Z", "origin": ""},
+   "value": [1700000000, "1"]},
+  {"metric": {"__name__": "h4nb_run_info", "run": "scan/run1", "start_utc": "2026-11-08T11:00:00Z"},
+   "value": [1700000000, "1"]}
+]}}

@@ -9,7 +9,8 @@ def test_serve_passes_no_browser_flag(monkeypatch, tmp_path):
     calls = []
     monkeypatch.setattr(cli, "serve", lambda root, **kw: calls.append((root, kw)))
     assert cli.main(["serve", str(tmp_path), "--no-browser", "--port", "8821"]) == 0
-    assert calls == [(str(tmp_path), {"port": 8821, "export_dir": None, "open_browser": False})]
+    assert calls == [(str(tmp_path), {"port": 8821, "export_dir": None, "open_browser": False,
+                      "prometheus": None, "grafana_url": None})]
 
 
 def test_serve_opens_browser_by_default(monkeypatch, tmp_path):

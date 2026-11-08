@@ -1,0 +1,4 @@
+{"status": "success", "data": {"resultType": "matrix", "result": [
+  {"metric": {"__name__": "h4nb_sim_time", "run": "eta/run1"},
+   "values": [[1700000000, "0"], [1700000015, "0.25"], [1700000030, "0.5"], [1700000045, "1"]]}
+]}}

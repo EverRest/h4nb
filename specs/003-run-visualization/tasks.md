@@ -139,7 +139,8 @@ description: "Task list for h4nb-viz: local web app for the visualization of run
 
 ## Phase 6: User Story 2 - Live run with data from Grafana (P1, Phase 2)
 
-- [ ] T021 [US2] `src/h4nb_viz/prometheus.py`: implement the Prometheus client.
+- [x] T021 [US2] `src/h4nb_viz/prometheus.py`: implement the Prometheus client.
+  - Evidence: `pytest tools/h4nb-viz/tests -q -p no:cacheprovider` on Python 3.13.3: 92 passed. `test_names_match_002_contract` and `test_query_range_joins_sim_time` pass (tests/test_prometheus.py).
   - Use `query_range` with `urllib` (research.md R6).
   - Join each series with `h4nb_sim_time`.
   - Use the name table of contracts/http-api.md.
@@ -147,7 +148,8 @@ description: "Task list for h4nb-viz: local web app for the visualization of run
   - Set `prometheus_ok` in `/api/status`. Check it with `GET <url>/-/ready` (contracts/http-api.md).
   - Check: `tests/test_prometheus.py::test_names_match_002_contract`. The test reads the Prometheus names in the table of research.md R6. It fails if a name is not in `specs/002-run-metrics/contracts/metrics.md`. The comparison uses full names. Counters keep the suffix `_total`.
   - Check: `tests/test_prometheus.py::test_query_range_joins_sim_time`. The test checks that each returned series has the x values of `h4nb_sim_time`. It uses the fixture `fake_prometheus` of T024.
-- [ ] T022 [US2] Add the `/series` source option and the run match.
+- [x] T022 [US2] Add the `/series` source option and the run match.
+  - Evidence: `pytest tools/h4nb-viz/tests -q -p no:cacheprovider` on Python 3.13.3: 92 passed. The T022 server tests in tests/test_server.py pass: runs_in_prometheus, run_without_match, backfill_only, series_source_auto_falls_back, series_prometheus_503, series_origin_filter.
   - Add `/series?source=auto|prometheus|files`.
   - Query `h4nb_run_info` without a selector.
   - Match each run by `start_utc`. Set `prom_label`.
@@ -166,7 +168,8 @@ description: "Task list for h4nb-viz: local web app for the visualization of run
     4. Open the page. The status bar shows `Prometheus: on`.
     5. Wait 15 s. D1 gets a new point.
     6. Stop the exporter. The status bar shows `Prometheus: off` within 15 s. D1 stays on the file data.
-- [ ] T024 [P] [US2] Write `tests/test_prometheus.py`. Use a fake Prometheus. It is an `http.server` that returns fixed `query_range` JSON. Test the fallback to files when Prometheus is down.
+- [x] T024 [P] [US2] Write `tests/test_prometheus.py`. Use a fake Prometheus. It is an `http.server` that returns fixed `query_range` JSON. Test the fallback to files when Prometheus is down.
+  - Evidence: `pytest tools/h4nb-viz/tests -q -p no:cacheprovider` on Python 3.13.3: 92 passed. Fixture `fake_prometheus` in tests/conftest.py with tests/data/prom_*.json. Fallback test passes.
   - Check: the fixture `fake_prometheus` is in `tests/conftest.py`. It starts a `http.server.ThreadingHTTPServer` on `127.0.0.1` with a free port.
   - Check: the fixture serves `/api/v1/query_range`, `/api/v1/query` and `/-/ready`. The responses come from `tests/data/prom_*.json`. These files copy the JSON shape of the Prometheus HTTP API.
   - Check: the fixture records each request. The tests use the record to check the `run` matcher, the `origin!="backfill"` matcher and the step (≥ 15 s). One test stops the fixture to check the fallback.

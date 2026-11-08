@@ -1,7 +1,7 @@
 """Command line of h4nb-viz.
 
   h4nb-viz fake OUT_DIR [--n 20000] [--snaps 60] [--t-end 6.3125]
-  h4nb-viz serve ROOT [--port 8820] [--export-dir DIR] [--no-browser]
+  h4nb-viz serve ROOT [--port 8820] [--export-dir DIR] [--no-browser] [--prometheus URL] [--grafana URL]
 """
 from __future__ import annotations
 
@@ -29,6 +29,8 @@ def build_parser() -> argparse.ArgumentParser:
     srv.add_argument("--port", type=int, default=8820, help="TCP port. Default: 8820.")
     srv.add_argument("--export-dir", default=None, help="Directory for exported media. Default: ~/h4nb-viz-exports.")
     srv.add_argument("--no-browser", action="store_true", help="Do not open the browser.")
+    srv.add_argument("--prometheus", default=None, metavar="URL", help="Prometheus URL, for example http://127.0.0.1:9090.")
+    srv.add_argument("--grafana", default=None, metavar="URL", help="Grafana URL. The page shows a link to it.")
     return parser
 
 
@@ -44,7 +46,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         return 0
     if not os.path.isdir(args.root):
         parser.error("ROOT is not a directory: %s" % args.root)
-    serve(args.root, port=args.port, export_dir=args.export_dir, open_browser=not args.no_browser)
+    serve(args.root, port=args.port, export_dir=args.export_dir, open_browser=not args.no_browser,
+          prometheus=args.prometheus, grafana_url=args.grafana)
     return 0
 
 

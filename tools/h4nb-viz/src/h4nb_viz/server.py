@@ -15,12 +15,13 @@ import traceback
 import urllib.parse
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 
 import numpy as np
 
 from . import __version__
-from .runs import RunIndex, central_id_of, detail, newest_change, summarize, t_end_of
+from .prometheus import NAMES, Prometheus, PromError, utc_epoch
+from .runs import RESCAN_SECONDS, RunIndex, central_id_of, detail, newest_change, start_utc_of, summarize, t_end_of
 from .snapshots import (FIELD_MASS, FIELD_POS, FIELD_VEL, Snapshot, SubsetCache, encode_frame, encode_ids,
                         list_frames)
 from .tables import SERIES_COLUMNS, read_series
@@ -102,14 +103,21 @@ def _fields(query: Dict[str, List[str]]) -> int:
 
 
 class App:
-    """State of one server: the root directory, the run index and the subset cache."""
+    """State of one server: the root directory, the run index, the subset cache and Prometheus."""
 
-    def __init__(self, root: str, export_dir: Optional[str] = None, web_dir: str = WEB_DIR):
+    def __init__(self, root: str, export_dir: Optional[str] = None, web_dir: str = WEB_DIR,
+                 prometheus: Optional[str] = None, grafana_url: Optional[str] = None,
+                 clock: Callable[[], float] = time.monotonic):
         self.root = os.path.abspath(root)
         self.web_dir = os.path.abspath(web_dir)
         self.export_dir = export_dir or os.path.expanduser("~/h4nb-viz-exports")
         self.runs = RunIndex(self.root)
         self.subsets = SubsetCache()
+        self.prom = Prometheus(prometheus, clock=clock) if prometheus else None
+        self.grafana_url = grafana_url
+        self._clock = clock
+        self._labels: Dict[str, str] = {}  # {start_utc: run label}, read at each rescan.
+        self._labels_at: Optional[float] = None
 
     def run_dir(self, name: str) -> str:
         path = self.runs.runs().get(name)
@@ -124,24 +132,65 @@ class App:
         return frames[0], frames
 
     def status(self) -> dict:
-        return {"version": __version__, "root": self.root, "prometheus": None, "prometheus_ok": False,
-                "ffmpeg": shutil.which("ffmpeg") is not None, "grafana_url": None}
+        return {"version": __version__, "root": self.root,
+                "prometheus": self.prom.url if self.prom else None,
+                "prometheus_ok": bool(self.prom and self.prom.ok()),
+                "ffmpeg": shutil.which("ffmpeg") is not None, "grafana_url": self.grafana_url}
+
+    def prom_labels(self) -> Dict[str, str]:
+        """{start_utc: run label} of Prometheus. One h4nb_run_info query runs per rescan."""
+        if self.prom is None:
+            return {}
+        now = self._clock()
+        if self._labels_at is None or now - self._labels_at >= RESCAN_SECONDS:
+            self._labels_at = now
+            try:
+                self._labels = self.prom.run_labels()
+            except PromError:
+                self._labels = {}  # Prometheus is down. The runs are then not in Prometheus.
+        return self._labels
 
     def run_list(self, now: float) -> List[dict]:
         found = [(newest_change(path), name, path) for name, path in self.runs.runs().items()]
         found.sort(key=lambda item: -item[0])
-        return [summarize(name, path, now) for _, name, path in found]
+        labels = self.prom_labels()
+        return [summarize(name, path, now, labels.get(start_utc_of(path))) for _, name, path in found]
 
     def series(self, name: str, query: Dict[str, List[str]]) -> dict:
         run_dir = self.run_dir(name)
         source = query.get("source", ["auto"])[0]
         if source not in ("auto", "files", "prometheus"):
             raise ApiError(400, "source must be auto, files or prometheus")
-        if source == "prometheus":
-            raise ApiError(503, "Prometheus is not configured")
         names = [n for n in query.get("names", [""])[0].split(",") if n]
         if not names:
             raise ApiError(400, "names is required")
+        if source == "files":
+            return {"source": "files", "series": self.file_series(run_dir, names)}
+        label = self.prom_labels().get(start_utc_of(run_dir)) if self.prom else None
+        start = utc_epoch(start_utc_of(run_dir))
+        prom_names = [n for n in names if n in NAMES]
+        if source == "prometheus":
+            if self.prom is None:
+                raise ApiError(503, "Prometheus is not configured")
+            if label is None or start is None:
+                raise ApiError(503, "run %s is not in Prometheus" % name)
+            missing = [n for n in names if n not in NAMES]
+            if missing:
+                raise ApiError(400, "not in Prometheus: %s" % ",".join(missing))
+        if label is None or start is None or not prom_names:
+            return {"source": "files", "series": self.file_series(run_dir, names)}
+        try:
+            out = self.prom.series(label, prom_names, start, time.time())
+        except PromError as err:
+            if source == "prometheus":
+                raise ApiError(503, "Prometheus is not reachable: %s" % err)
+            return {"source": "files", "series": self.file_series(run_dir, names)}
+        rest = [n for n in names if n not in NAMES]
+        out.update(self.file_series(run_dir, rest))
+        return {"source": "prometheus", "series": {n: out[n] for n in names if n in out}}
+
+    def file_series(self, run_dir: str, names: List[str]) -> dict:
+        """The series of the files of the run (specs/001 file formats)."""
         out = {}
         for series_name in names:
             if series_name == "progress_ratio":
@@ -153,7 +202,7 @@ class App:
             if data is not None:
                 out[series_name] = {"x": json_list(data["x"]), "x_name": data["x_name"],
                                     "y": json_list(data["y"]), "metric": data["metric"]}
-        return {"source": "files", "series": out}
+        return out
 
     def ids(self, name: str, query: Dict[str, List[str]]) -> Tuple[str, bytes, int]:
         run_dir = self.run_dir(name)
@@ -283,16 +332,18 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
 
-def make_server(root: str, port: int = 8820, export_dir: Optional[str] = None,
-                web_dir: str = WEB_DIR) -> ThreadingHTTPServer:
+def make_server(root: str, port: int = 8820, export_dir: Optional[str] = None, web_dir: str = WEB_DIR,
+                prometheus: Optional[str] = None, grafana_url: Optional[str] = None,
+                clock: Callable[[], float] = time.monotonic) -> ThreadingHTTPServer:
     """Return a server bound to 127.0.0.1. Use port 0 to get a free port."""
     httpd = ThreadingHTTPServer(("127.0.0.1", port), Handler)
-    httpd.app = App(root, export_dir, web_dir)
+    httpd.app = App(root, export_dir, web_dir, prometheus, grafana_url, clock)
     return httpd
 
 
-def serve(root: str, port: int = 8820, export_dir: Optional[str] = None, open_browser: bool = True) -> None:
-    httpd = make_server(root, port, export_dir)
+def serve(root: str, port: int = 8820, export_dir: Optional[str] = None, open_browser: bool = True,
+          prometheus: Optional[str] = None, grafana_url: Optional[str] = None) -> None:
+    httpd = make_server(root, port, export_dir, prometheus=prometheus, grafana_url=grafana_url)
     url = "http://127.0.0.1:%d/" % httpd.server_address[1]
     print("h4nb-viz: serving %s at %s (Ctrl+C stops the server)" % (httpd.app.root, url), flush=True)
     if open_browser:

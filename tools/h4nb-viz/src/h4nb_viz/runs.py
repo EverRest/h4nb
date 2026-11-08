@@ -73,6 +73,11 @@ def t_end_of(run_dir: str) -> Optional[float]:
         return None
 
 
+def start_utc_of(run_dir: str) -> Optional[str]:
+    """The start_utc value of run_info.txt, or None. Prometheus matches runs by this value."""
+    return parse_run_info(_read_text(run_dir, "run_info.txt")).get("start_utc")
+
+
 def central_id_of(run_dir: str) -> int:
     """The central_id value of config.used. The default is 0."""
     try:
@@ -111,8 +116,9 @@ def run_state(run_dir: str, now: float) -> str:
     return "finished" if energy["time"][-1] >= t_end * (1 - 1e-12) else "stopped early"
 
 
-def summarize(name: str, run_dir: str, now: float) -> dict:
-    """One entry of the run list (contracts/http-api.md `GET /api/runs`)."""
+def summarize(name: str, run_dir: str, now: float, prom_label: Optional[str] = None) -> dict:
+    """One entry of the run list (contracts/http-api.md `GET /api/runs`). prom_label is the run label of
+    specs/002 when Prometheus has the run, else None."""
     frames = list_frames(run_dir)
     energy = read_table(run_dir, "energy.dat")
     times = energy.get("time", ()) if energy else ()
@@ -124,9 +130,8 @@ def summarize(name: str, run_dir: str, now: float) -> dict:
         "sim_time": float(times[-1]) if len(times) else None,
         "snapshots": len(frames),
         "tables": [t for t in TABLE_NAMES if table_path(run_dir, t)],
-        # Prometheus matching is added in Phase 2 (T022). Until then, no run matches.
-        "in_prometheus": False,
-        "prom_label": None,
+        "in_prometheus": prom_label is not None,
+        "prom_label": prom_label,
         "thin": False,
         "archive": None,
     }
