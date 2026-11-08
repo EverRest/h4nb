@@ -94,7 +94,7 @@ main {
 #colorbar { width: 160px; height: 10px; border: 1px solid var(--line); }
 #range { color: var(--muted); font-variant-numeric: tabular-nums; }
 
-#status { padding: 4px 12px 6px; color: var(--muted); font-size: 12px; border-top: 1px solid var(--line); }
+#status, #sources { padding: 4px 12px 6px; color: var(--muted); font-size: 12px; border-top: 1px solid var(--line); }
 
 /* One frame: hide the time controls. */
 body.single #slider, body.single #time, body.single #play { display: none; }

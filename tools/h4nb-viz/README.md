@@ -42,7 +42,7 @@ The server prints a link with a token, and the browser opens it. The token is ne
 | Command | Use |
 |---|---|
 | `h4nb-viz fake OUT_DIR [--n 20000] [--snaps 60] [--t-end 6.3125]` | Write a fake run. Use it to test the page. |
-| `h4nb-viz serve ROOT [--port 8820] [--export-dir DIR] [--no-browser]` | Serve the runs under ROOT. If ROOT is a run, it is listed too. |
+| `h4nb-viz serve ROOT [--port 8820] [--export-dir DIR] [--no-browser] [--prometheus URL] [--grafana URL]` | Serve the runs under ROOT. If ROOT is a run, it is listed too. `--prometheus` reads the live curves. `--grafana` adds a link to Grafana. |
 
 ## Keys
 
@@ -78,6 +78,23 @@ h4nb-viz serve ./runs
 ```
 
 Serve the directory that holds the runs. Reading a run from an archive of `tools/h4nb_pack.sh` is not supported yet.
+
+## Prometheus
+
+Use `--prometheus URL` to read the curves from Prometheus. The server uses the metrics of specs/002. It joins each curve with `h4nb_sim_time`. A run that Prometheus does not have uses the files.
+
+- `source=auto` (the default): Prometheus when the run is in Prometheus and Prometheus answers. Otherwise the files.
+- `source=prometheus`: Prometheus only. The server returns 503 when Prometheus does not answer.
+- `source=files`: the files only.
+
+The page refreshes the curves of a running run every 15 s. It reads the frame list every 5 s. It reads the server status every 5 s. The status line shows `Prometheus: on`, `off` or `unknown`. Stop of Prometheus shows `off` within about 10 s. Use `--grafana URL` to show the link "Open in Grafana".
+
+A link with `#run=<label>` opens the run whose Prometheus label is the value.
+
+Status of the manual check (T023):
+
+- Done: the status line shows `Prometheus: on` with a stub Prometheus. It shows `off` after the stub stops. The Grafana link has its `href`. The page raises no script error in headless Chrome.
+- Open: the live update of a running run (a new point of D1 after 15 s). Open: the stop of the exporter in the stack of specs/002. Both need a running run and the Docker stack.
 
 ## Resource use
 

@@ -168,6 +168,7 @@ description: "Task list for h4nb-viz: local web app for the visualization of run
     4. Open the page. The status bar shows `Prometheus: on`.
     5. Wait 15 s. D1 gets a new point.
     6. Stop the exporter. The status bar shows `Prometheus: off` within 15 s. D1 stays on the file data.
+  - Partial (not marked): the status line `Prometheus: on/off` and the Grafana link are checked in headless Chrome against a stub Prometheus. The page also has the `#run=` link, the 15 s curve refresh and the 5 s frame refresh. Open: the live refresh of a running run (steps 5 and 6). Evidence in tools/h4nb-viz/README.md.
 - [x] T024 [P] [US2] Write `tests/test_prometheus.py`. Use a fake Prometheus. It is an `http.server` that returns fixed `query_range` JSON. Test the fallback to files when Prometheus is down.
   - Evidence: `pytest tools/h4nb-viz/tests -q -p no:cacheprovider` on Python 3.13.3: 92 passed. Fixture `fake_prometheus` in tests/conftest.py with tests/data/prom_*.json. Fallback test passes.
   - Check: the fixture `fake_prometheus` is in `tests/conftest.py`. It starts a `http.server.ThreadingHTTPServer` on `127.0.0.1` with a free port.

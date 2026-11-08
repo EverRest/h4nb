@@ -130,6 +130,7 @@ export class Plots {
     this.onSeek = onSeek;
     this.charts = [];
     this.time = null;
+    this.generation = 0; // Counts the loads. An older load that ends late is dropped.
   }
 
   clear() {
@@ -139,17 +140,21 @@ export class Plots {
   }
 
   // Load the curves of one run and draw the panels. G is shown in the axis label (FR-014).
+  // Returns the source of the curves, or null when a newer load took over.
   async load(run, G) {
-    this.clear();
+    const generation = ++this.generation;
     const names = [...new Set([...PANELS.flatMap((p) => p.names), ...HELPER_SERIES])];
     const selected = names.filter((n) => n !== "period_incomplete").join(",");
     const response = await fetch(`/api/runs/${encodeURIComponent(run)}/series?names=${selected}`);
     const body = await response.json();
     if (!response.ok) throw new Error(body.error || `HTTP ${response.status}`);
+    if (generation !== this.generation) return null;
+    this.clear(); // Clear only after a good answer, so a failed refresh keeps the old curves.
     const series = derive(body.series);
     for (const panel of PANELS) this.build(panel, series, run, G);
     // All panels are in the page now, so each one can take its final width.
     for (const chart of this.charts) this.fit(chart);
+    return body.source; // "prometheus" or "files".
   }
 
   build(panel, series, run, G) {

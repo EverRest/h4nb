@@ -7,7 +7,9 @@ import { Recorder, extensionFor, saveFile, stamp, uploadExport } from "./record.
 import { drawCard } from "./card.js";
 
 const PLAY_FPS = 6; // Frames per second while playing.
-const RUN_POLL_MS = 5000; // The run list is read again this often.
+const RUN_POLL_MS = 5000; // The run list is read again this often. A running run gets a new frame list at this rate.
+const SERIES_MS = 15000; // A running run gets new curves this often.
+const STATUS_MS = 5000; // The server status is read this often. Stop shows within about 10 s.
 const THEME_KEY = "h4nb-viz.theme";
 const PLOTS_KEY = "h4nb-viz.plots";
 
@@ -24,10 +26,26 @@ const state = {
   presentation: false,
   recorder: null,
   ffmpeg: false,
+  runState: null, // state of the selected run in /api/runs
+  seriesSource: null, // "prometheus" or "files": the source of the last curves
+  promStatus: undefined, // /api/status: { prometheus, prometheus_ok, grafana_url }. undefined: not read. null: failed.
 };
 
 function setStatus(text) {
   $("status").textContent = text;
+}
+
+// The second status line: the sources of the data.
+function renderSources() {
+  const prom = state.promStatus;
+  let promText = null;
+  if (prom === null) promText = "Prometheus: unknown";
+  else if (prom) promText = prom.prometheus === null ? "Prometheus: not set" : `Prometheus: ${prom.prometheus_ok ? "on" : "off"}`;
+  const series = state.seriesSource ? `Curves: ${state.seriesSource}` : "";
+  $("sources").textContent = [promText, series].filter(Boolean).join(" · ");
+  const link = $("grafana");
+  link.hidden = !(prom && prom.grafana_url);
+  if (!link.hidden) link.href = prom.grafana_url;
 }
 
 async function fetchJson(url) {
@@ -54,12 +72,86 @@ function renderRuns(runs) {
   }
 }
 
+// A link with #run=<label> opens the run whose Prometheus label is the value (contracts/http-api.md).
+function applyHash(runs) {
+  const hash = window.location.hash;
+  if (!hash.startsWith("#run=")) return;
+  let value;
+  try {
+    value = decodeURIComponent(hash.slice("#run=".length));
+  } catch (error) {
+    setStatus("The run label in the link is not valid.");
+    return;
+  }
+  const matches = runs.filter((r) => r.prom_label === value);
+  if (matches.length === 1) {
+    selectRun(matches[0].run).catch((e) => setStatus(e.message));
+  } else if (matches.length === 0) {
+    setStatus(`No run with label ${value} in this root directory. Check the root directory of h4nb-viz.`);
+  } else {
+    setStatus(`Several runs match ${value}.`);
+  }
+}
+
+let hashChecked = false;
+
 async function refreshRuns() {
   try {
-    renderRuns(await fetchJson("/api/runs"));
+    const runs = await fetchJson("/api/runs");
+    renderRuns(runs);
+    if (!hashChecked) {
+      hashChecked = true;
+      applyHash(runs);
+    }
+    const entry = runs.find((r) => r.run === state.run);
+    state.runState = entry ? entry.state : null;
+    if (state.runState === "running") await refreshFrames();
   } catch (error) {
     setStatus(error.message);
   }
+}
+
+// The frame list of the selected run. A running run gets new snapshots, so the slider follows them.
+async function refreshFrames() {
+  const detail = await fetchJson(`/api/runs/${encodeURIComponent(state.run)}`);
+  if (detail.frames.length === state.detail.frames.length) return;
+  state.detail = detail;
+  $("slider").max = String(Math.max(0, detail.frames.length - 1));
+  document.body.classList.toggle("single", detail.frames.length <= 1);
+  if (!state.frame && detail.frames.length > 0) await showFrame(0, true); // The first frame arrived.
+}
+
+// The curves of a running run. The plots are drawn again with the new samples.
+let seriesBusy = false;
+
+async function refreshSeries() {
+  if (seriesBusy || !state.run || state.runState !== "running" || !state.detail) return;
+  const run = state.run;
+  seriesBusy = true;
+  try {
+    const source = await state.plots.load(run, state.detail.config.G);
+    if (state.run === run && source !== null) {
+      state.seriesSource = source;
+      state.plots.setTime(state.detail.frames[state.index].time);
+    }
+  } catch (error) {
+    // The server did not answer. The old curves stay on the page.
+  } finally {
+    seriesBusy = false;
+  }
+  renderSources();
+}
+
+// Read the server status: whether Prometheus answers, and the Grafana link.
+async function readServerStatus() {
+  try {
+    state.promStatus = await fetchJson("/api/status");
+    state.ffmpeg = Boolean(state.promStatus.ffmpeg);
+  } catch (error) {
+    state.promStatus = null;
+    state.ffmpeg = false;
+  }
+  renderSources();
 }
 
 async function selectRun(name) {
@@ -67,6 +159,7 @@ async function selectRun(name) {
   const detail = await fetchJson(`/api/runs/${encodeURIComponent(name)}`);
   state.run = name;
   state.detail = detail;
+  state.frame = null;
   state.loader = new FrameLoader({ run: name });
   const frames = detail.frames;
   document.body.classList.toggle("single", frames.length <= 1); // A single frame has no time controls.
@@ -78,10 +171,12 @@ async function selectRun(name) {
   }
   await showFrame(0, true);
   try {
-    await state.plots.load(name, detail.config.G);
+    const source = await state.plots.load(name, detail.config.G);
+    if (source !== null && state.run === name) state.seriesSource = source;
   } catch (error) {
     setStatus(`Plots: ${error.message}`);
   }
+  renderSources();
   setStatus(`${name} · ${frames.length} frames · N = ${detail.config.n || "?"}`);
   refreshRuns();
 }
@@ -326,14 +421,6 @@ function startLoop() {
   requestAnimationFrame(frame);
 }
 
-async function readServerStatus() {
-  try {
-    state.ffmpeg = Boolean((await fetchJson("/api/status")).ffmpeg);
-  } catch (error) {
-    state.ffmpeg = false;
-  }
-}
-
 function main() {
   applyTheme(savedTheme());
   setPlotsShown(savedPlots());
@@ -351,6 +438,8 @@ function main() {
   startLoop();
   refreshRuns();
   setInterval(refreshRuns, RUN_POLL_MS);
+  setInterval(refreshSeries, SERIES_MS);
+  setInterval(readServerStatus, STATUS_MS);
   setInterval(playTick, 1000 / PLAY_FPS);
   setStatus("Select a run.");
 }
