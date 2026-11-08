@@ -1,5 +1,5 @@
 # Compile check only. A runner without a GPU shows that the code builds, not that it is correct (constitution).
-# -Wall -Wextra: the host code has no warnings with these flags (checked with the container build).
+# -Wall -Wextra: warnings only, the build does not fail on them (no -Werror). Not checked on this runner.
 name: build
 # workflow_dispatch adds a "Run workflow" button on the Actions page (manual start).
 on: [push, pull_request, workflow_dispatch]
@@ -16,6 +16,10 @@ jobs:
         run: ctest --test-dir build -L cpu --output-on-failure
       - name: CPU-only smoke test
         run: build/h4nb_mkdisk n=1000 frac=0.5 out=/tmp/disk.txt
+      - name: Tool smoke test (help only, no GPU needed)
+        run: |
+          build/h4nb_run help=1 > /dev/null
+          tools/h4nb_pack.sh --help > /dev/null
   # Task T036 and MPI-M9. Compile check of the MPI path (H4NB_MPI=ON). No GPU here, so no GPU run.
   # The cpu tests run with the MPI build. The smoke step runs two ranks with mpirun and no GPU.
   build-mpi:

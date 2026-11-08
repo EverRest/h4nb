@@ -203,6 +203,28 @@ The full contract with types, defaults and ranges: [`contracts/run-config.md`](s
 | `tile`, `blocks_per_sm` | Measure with `h4nb_bench tiles=64,128,256 bpsm=2,4,8`. Put the best values in your machine config. |
 | GPU count, node count | Set by the launcher (`devices=`, `mpirun -np`, `srun`). The code does not need to know the cluster in advance. |
 
+### 5.4 Implicit rules
+
+These rules apply to the library and to all tools. The API does not check them in every case.
+
+- Index 0 is the central body. It does not move in a drag field.
+- Particle 0 has no drag. `Dissipation::LinearDrag` applies to particles 1 to N−1 only.
+- Particle 0 uses level 0 in adaptive mode. Its acceleration is set to zero.
+- `fixed_center=true` keeps particle 0 at its position. Use it only for tests.
+- `advance_to(t)` requires `t` to be a multiple of `dt_max`. Write `t = k * dt_max` with an integer `k`.
+- `advance_to(t)` requires `t` to be at or after `time()`. It throws `std::invalid_argument` otherwise.
+- `eta` is the Aarseth accuracy parameter. It sets the step of each particle. A smaller `eta` gives smaller steps and more cost.
+- `eta_init` sets the accuracy parameter for the first step only, at t = 0. Set `eta_init = 0` to use `eta`.
+- A particle with no force at t = 0 gets level 0. Its step is `dt_max`.
+- `kClosePair` is a status bit. It is set when a pair has r² < `r2_close`. `r2_close = 0` turns the check off.
+- Check `status()` to find close encounters after `advance_to()`.
+- Level k has the step `dt_max / 2^k`. Level 0 has the step `dt_max`. The largest level is `max_level`.
+- A particle can move to a finer level at any block step.
+- A particle can move to a coarser level only one level at a time. It can move only when its time is a multiple of the coarser step.
+- At a later step, a step estimate that is NaN keeps the particle at its level. No status bit is set. A zero estimate gives the finest level and sets `kDtUnderflow`. An infinite estimate gives the coarsest level.
+- At t = 0, such an estimate sets the status bit `kInitStepInvalid`. The particle gets the coarsest level.
+- Only `kNaN` stops `advance_to()`. The other status bits do not stop the run.
+
 ## 6. Run
 
 ### 6.1 ✅ Single process, one or more GPUs

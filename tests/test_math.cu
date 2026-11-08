@@ -126,6 +126,43 @@ static void test_update_particle() {
   CHECK(!(update_particle(pc, false, a1, j1, 2.0, x, v, a, j, t, next, lv) & kClosePair));
 }
 
+// Step estimate from the corrector at t1 (issue A3). h = 1 here (T = 1024 ticks, tick = 1/1024).
+// dt = 0 (eta = 0) gives the finest level and kDtUnderflow. dt = Inf gives the coarsest level. NaN (0/0, no force)
+// keeps the level with no status bit. The eta values (0 and 1e308) are edge inputs chosen to hit each case, not
+// realistic ones.
+static void test_step_estimate_edges() {
+  Config c;
+  c.dt_max = 1.0;
+  c.max_level = 10;
+  c.mode = StepMode::Block;
+  const double tick = c.dt_max / 1024.0;
+  const d4 a1{1, 0, 0, 0}, j1{0, 1, 0, 0}, z{0, 0, 0, 0};
+  d4 x{1, 0, 0, 1}, v{0, 1, 0, 0}, a = z, j = z;
+  int64_t t = 0, next = 0;
+  int lv = 5;
+
+  // dt = 0: the finest level, with the underflow bit.
+  c.eta = 0.0;
+  unsigned s0 = update_particle(make_params(c, tick, 1024, false), false, a1, j1, 4.0, x, v, a, j, t, next, lv);
+  CHECK(lv == 10 && (s0 & kDtUnderflow));
+
+  // dt = Inf (the product eta * (a s + j j) overflows): the coarsest level, no underflow bit.
+  c.eta = 1e308;
+  lv = 0;
+  a = z;
+  j = z;
+  unsigned si = update_particle(make_params(c, tick, 1024, false), false, a1, j1, 4.0, x, v, a, j, t, next, lv);
+  CHECK(lv == 0 && !(si & kDtUnderflow));
+
+  // dt = NaN (0/0, no force): keep the level, no status bit.
+  c.eta = 0.01;
+  lv = 5;
+  a = z;
+  j = z;
+  unsigned sn = update_particle(make_params(c, tick, 1024, false), false, z, z, 4.0, x, v, a, j, t, next, lv);
+  CHECK(lv == 5 && sn == 0);
+}
+
 // update_particle_d with LinearDrag: the status bits come from pass 2, the pass that gives the stored state.
 // A NaN velocity in pass 1 goes into pass 2, so kNaN is not lost.
 static void test_update_particle_d_status() {
@@ -334,6 +371,7 @@ int main() {
   test_aarseth();
   test_choose_level();
   test_update_particle();
+  test_step_estimate_edges();
   test_update_particle_d_status();
   test_accumulate();
   test_accumulate_sc();

@@ -20,6 +20,9 @@ endif()
 find_package(CUDAToolkit REQUIRED)
 # Line tables for Nsight source view and compute-sanitizer. They do not change the generated code.
 add_compile_options($<$<COMPILE_LANGUAGE:CUDA>:-lineinfo>)
+# Warnings for all sources. CMAKE_CXX_FLAGS does not reach the .cu files, so the CUDA host compiler gets them here.
+add_compile_options($<$<COMPILE_LANGUAGE:CXX>:-Wall> $<$<COMPILE_LANGUAGE:CXX>:-Wextra>
+                    $<$<COMPILE_LANGUAGE:CUDA>:--compiler-options=-Wall,-Wextra>)
 # Accuracy rule (TZ 4.4): never add --use_fast_math / -ffast-math. NaN checks rely on IEEE compares.
 
 add_library(h4nb src/io.cpp src/diag_sum.cpp src/kernels.cu src/simulation.cu src/build_info.cu)
