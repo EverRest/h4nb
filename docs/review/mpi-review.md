@@ -41,7 +41,7 @@ The main problems:
 | MPI-H3 | HIGH | No check that MPI is CUDA-aware when `mpi_host_staging=0` | `src/simulation.cu:531-554` |
 | MPI-M1 | MEDIUM | Diagnostics not bit-identical; A9 must not `cmp` energy.dat | `src/simulation.cu:807-858` |
 | MPI-M2 | MEDIUM | 7 collectives and 4 host syncs per block step | `src/simulation.cu:491-577` |
-| MPI-M3 | MEDIUM | No per-phase metrics, rank imbalance, NA histogram, NVTX | `include/h4nb/h4nb.hpp`, `tools/h4nb_run.cpp:391-398` |
+| MPI-M3 | MEDIUM | ~~No per-phase metrics, rank imbalance, NA histogram, NVTX~~ **Partly closed 2026-11-08** (`RankProfile` / `profile()` / schema 2 on rank 0; gather, NVTX, `perf_ranks`/`na_hist` still open) | `include/h4nb/h4nb.hpp`, `tools/h4nb_run.cpp` |
 | MPI-M4 | MEDIUM | Run record: no run_id, hashes, schema, end status, MPI environment | `tools/run_info.hpp`, `src/mpi_comm.cpp:150-185` |
 | MPI-M5 | MEDIUM | Silent GPU sharing in `select_device` | `src/mpi_comm.cpp:83` |
 | MPI-M6 | MEDIUM | NaN halt only on the MPI path | `src/simulation.cu:502-508, 604` |

@@ -355,7 +355,7 @@ Rules:
 | `energy_periods.dat` | `period t_start t_end max_rel_err mean_rel_err complete`: one row for each reference period |
 | `momentum.dat` | `time Px Py Pz Lx Ly Lz dP_rel dL_rel` (changes divided by scales from the initial state) |
 | `timesteps.dat` | `time dt_min dt_max dt_mean mean_active_per_block_step r_min` |
-| `performance.dat` | `time wall_s block_steps active pairs_per_s` |
+| `performance.dat` | `time wall_s block_steps active pairs_per_s` then schema 2 phase columns (MPI-M3) |
 | `snap_NNNNNN.snap`, `snap_final.snap` | Binary snapshot: header + `id m x y z vx vy vz` arrays |
 | `config.used` | Final configuration: key, value and source of each key |
 | `run_info.txt` | Tool, commit, build type, architectures, nvcc, CUDA runtime and driver, GPUs, ranks, host, start time, command line. `h4nb_study` and `h4nb_bench` write it too. |

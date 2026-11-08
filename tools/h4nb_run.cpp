@@ -413,7 +413,11 @@ static int run(int argc, char** argv) {
       std::fprintf(fe, "# time K U E rel_err max_rel_err mean_rel_err W_diss\n");
       std::fprintf(fm, "# time Px Py Pz Lx Ly Lz dP_rel dL_rel  (changes divided by sum m|v| and sum m|r x v| of the initial state, TZ 7.3)\n");
       std::fprintf(ft, "# time dt_min dt_max dt_mean mean_active_per_block_step r_min\n");
-      if (fp) std::fprintf(fp, "# time wall_s block_steps active pairs_per_s\n");
+      // Schema 2 (MPI-M3): old columns first, then phase summary from RankProfile on this rank (rank 0).
+      if (fp)
+        std::fprintf(fp,
+                     "# time wall_s block_steps active pairs_per_s wall_max wall_min compute_imb comm_frac "
+                     "t_diag_max bytes_max t_tn t_select t_gather t_force t_xchg t_correct\n");
     } catch (const std::exception& e) {
       file_error(e.what());
     }
@@ -550,12 +554,25 @@ static int run(int argc, char** argv) {
   write_snap(0);
   for (long long k = 1; k <= nseg; ++k) {
     const h4nb::Stats s0 = sim.stats();
+    (void)sim.profile(true);  // Clear phase counters for this diag segment (MPI-M3).
     const auto w0 = Clock::now();
     sim.advance_to(double(k) * diag);
     const double wall = since(w0);
     const h4nb::Stats s1 = sim.stats();
+    const h4nb::RankProfile pr = sim.profile(true);
     const long long steps = s1.block_steps - s0.block_steps, active = s1.active_total - s0.active_total;
-    if (fp) std::fprintf(fp, "%.17g %.6f %lld %lld %.6e\n", sim.time(), wall, steps, active, double(active) * N / wall);
+    if (fp) {
+      const double compute = pr.t_select + pr.t_force + pr.t_correct;
+      const double comm = pr.t_gather + pr.t_xchg;
+      const double phases = compute + comm + pr.t_tn;
+      const double compute_imb = 1.0;  // One rank here; multi-rank gather is a later MPI-M3 slice.
+      const double comm_frac = phases > 0 ? comm / phases : 0.0;
+      const double bytes_max = double(pr.bytes_sent > pr.bytes_recv ? pr.bytes_sent : pr.bytes_recv);
+      std::fprintf(fp,
+                   "%.17g %.6f %lld %lld %.6e %.6f %.6f %.6f %.6f %.6f %.6e %.6e %.6e %.6e %.6e %.6e %.6e\n",
+                   sim.time(), wall, steps, active, double(active) * N / wall, wall, wall, compute_imb, comm_frac, 0.0,
+                   bytes_max, pr.t_tn, pr.t_select, pr.t_gather, pr.t_force, pr.t_xchg, pr.t_correct);
+    }
     // status() is collective (MPI_BOR). With several ranks, advance_to() stops at the first block step after
     // a rank sets kNaN. Then sim.time() is the time of that block step, before the diag time.
     if (sim.status() & h4nb::kNaN) {

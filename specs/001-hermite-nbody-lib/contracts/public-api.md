@@ -7,7 +7,8 @@ The header at commit `339ce35` is the base contract. This file lists the rules a
 - `Simulation(const Particles&, const Config&)` uploads the data, computes a and j, and selects the first steps. It throws `std::invalid_argument` for bad input and `std::runtime_error` for a CUDA error.
 - `advance_to(double t)`: `t` is a multiple of `dt_max` and not less than `time()`. On return, all particles are synchronized at `t`.
 - `diagnostics()` works only at sync points. It costs N²/2 pair evaluations.
-- `state()`, `levels()`, `status()`, `stats()`, `time()`.
+- `state()`, `levels()`, `status()`, `stats()`, `metrics()`, `profile()`, `time()`.
+- `profile(reset)` returns local `RankProfile` phase times and byte counts (MPI-M3). It does not sync and does not run a collective. `reset` clears the step counters; it keeps `t_setup` and `t_init_force`.
 - `load_text`, `write_snapshot`, `read_snapshot`.
 
 ## Planned additions

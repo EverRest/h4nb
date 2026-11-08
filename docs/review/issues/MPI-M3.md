@@ -16,5 +16,6 @@
   - Cost: about 12 clock reads per block step (< 1 us), against 3 syncs of about 10 us.
 - See also MPI-M4 (run record) and MPI-M8 (diag-point cost).
 
+**Partly closed 2026-11-08:** `RankProfile` + `Simulation::profile()`; host phase timers and byte counts in `step()` (no new sync/collective); `performance.dat` schema 2 columns on rank 0. Still open: multi-rank gather for `wall_max`/`compute_imb`, `perf_ranks.dat`, `na_hist.dat`, NVTX, `profile=2` cudaEvents, tool-side `t_diag`/`t_state`.
 
 Source: docs/review/mpi-review.md (main @ 1e26eaa). Line numbers refer to 1e26eaa. Run `git pull` first.

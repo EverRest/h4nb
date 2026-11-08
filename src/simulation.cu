@@ -202,6 +202,7 @@ struct Simulation::Impl {
   std::vector<Dev> d;
   Stats st;
   Metrics mx;                    // Host counters for metrics(). Same block steps as st.
+  RankProfile pf;                // Phase times and bytes (MPI-M3). profile() copies them.
   double init_force_s = 0, init_levels_s = 0;  // Start-up times. metrics() copies them. reset does not clear them.
   // The particle set has P parts [base, base + n). One process: one part for each device, P = devices.size().
   // MPI (several ranks): one part for each rank, P = ranks(). Then d holds one device, the GPU of this rank.
@@ -516,6 +517,11 @@ struct Simulation::Impl {
     const auto t2 = Clock::now();
     init_force_s = std::chrono::duration<double>(t1 - t0).count();
     init_levels_s = std::chrono::duration<double>(t2 - t1).count();
+    // Init step() filled pf. Keep only the one-shot start-up times for profile().
+    const double setup = pf.t_setup;
+    pf = RankProfile{};
+    pf.t_setup = setup;
+    pf.t_init_force = init_force_s;
   }
 
   // Launch correct_kernel for one active set. Dissipation::Off has no extra arithmetic.
@@ -536,9 +542,15 @@ struct Simulation::Impl {
   // MPI (several ranks): the same phases with collectives; each rank owns one part; sums in rank order.
   // No floating-point value is added by MPI. One process with devices={0,1} and two ranks can give the same bits.
   // ponytail: two host syncs (one process) or three syncs and five collectives (MPI) per block step. Upgrade: O4.
+  // Host clocks (MPI-M3) sit only at the existing sync points. They do not add a sync or a collective.
   void step(bool init) {
+    using clock = std::chrono::steady_clock;
+    const auto sec = [](clock::time_point a, clock::time_point b) {
+      return std::chrono::duration<double>(b - a).count();
+    };
     const int G = int(d.size());  // Local devices. Under MPI, G is 1.
     int64_t Tn = 0;
+    const auto t_tn0 = clock::now();
     if (!init) {
       for (auto& e : d) {
         use(e);
@@ -576,6 +588,7 @@ struct Simulation::Impl {
         }
       }
     }
+    const auto t_tn1 = clock::now();
     for (auto& e : d) {
       use(e);
       predict_kernel<<<blocks(e.n, 256), 256, 0, e.s>>>(e.n, e.x, e.v, e.a, e.j, e.t, Tn, tick, e.xp, e.vp);
@@ -589,6 +602,7 @@ struct Simulation::Impl {
       use(e);
       H4_CUDA(cudaStreamSynchronize(e.s));
     }
+    const auto t_sel1 = clock::now();
 
     std::vector<int> na(P), off(P);  // Use (P). Do not use (size_t(P)): most vexing parse.
     int NA = 0;
@@ -606,6 +620,8 @@ struct Simulation::Impl {
       }
     }
     mx.active_hist[log2_bin(uint64_t(NA))]++;
+    const int nab = log2_bin(uint64_t(NA));
+    pf.na_hist[nab < 32 ? nab : 31]++;
 
 #ifdef H4NB_HAVE_MPI
     if (mpi) {
@@ -621,6 +637,7 @@ struct Simulation::Impl {
         copy(e.h_tx + o, e.tx + o, size_t(m) * sizeof(d4), e.s);
         copy(e.h_tv + o, e.tv + o, size_t(m) * sizeof(d4), e.s);
         copy(e.h_tid + o, e.tid + o, size_t(m) * sizeof(int), e.s);
+        pf.bytes_d2h += int64_t(m) * (2 * int64_t(sizeof(d4)) + int64_t(sizeof(int)));
       }
       H4_CUDA(cudaStreamSynchronize(e.s));
       H4_CUDA(cudaGetLastError());
@@ -631,7 +648,12 @@ struct Simulation::Impl {
         copy(e.tx, e.h_tx, size_t(NA) * sizeof(d4), e.s);
         copy(e.tv, e.h_tv, size_t(NA) * sizeof(d4), e.s);
         copy(e.tid, e.h_tid, size_t(NA) * sizeof(int), e.s);
+        pf.bytes_h2d += int64_t(NA) * (2 * int64_t(sizeof(d4)) + int64_t(sizeof(int)));
       }
+      const auto t_g1 = clock::now();
+      // Bytes per step (MPI-M3): Allreduce 16, counts 4P, Allgatherv 68 B/active, Alltoallv 64 B/active.
+      pf.bytes_sent += 16 + 4 * P + 68LL * m * (P - 1) + 64LL * (NA - m);
+      pf.bytes_recv += 16 + 4 * P + 68LL * (NA - m) + 64LL * (P - 1) * m;
       const Split sp = split(NA, e.n, e.sms, c.blocks_per_sm, c.tile);
       launch_force(c.tile, dim3(unsigned(blocks(NA, c.tile)), unsigned(sp.nj)), e.s, NA, e.tx, e.tv, e.tid, e.n, e.xp,
                    e.vp, e.base, sp.chunk, c.eps2, e.pa, e.pj);
@@ -641,29 +663,43 @@ struct Simulation::Impl {
       if (stage) {
         copy(e.h_fa, e.fa, size_t(NA) * sizeof(d4), e.s);
         copy(e.h_fj, e.fj, size_t(NA) * sizeof(d4), e.s);
+        pf.bytes_d2h += 2LL * int64_t(NA) * int64_t(sizeof(d4));
       }
       H4_CUDA(cudaStreamSynchronize(e.s));
       H4_CUDA(cudaGetLastError());
+      const auto t_f1 = clock::now();
       std::vector<int> rc(P), rd(P);
       for (int h = 0; h < P; ++h) rc[size_t(h)] = m, rd[size_t(h)] = h * m;  // Row h comes from rank h.
       comm::alltoallv_d4(stage ? (void*)e.h_fa : (void*)e.fa, na.data(), off.data(), stage ? (void*)e.h_ra : (void*)e.ra,
                          rc.data(), rd.data());
       comm::alltoallv_d4(stage ? (void*)e.h_fj : (void*)e.fj, na.data(), off.data(), stage ? (void*)e.h_rj : (void*)e.rj,
                          rc.data(), rd.data());
+      const auto t_x1 = clock::now();
       if (m) {
         if (stage) {
           copy(e.ra, e.h_ra, size_t(P) * size_t(m) * sizeof(d4), e.s);
           copy(e.rj, e.h_rj, size_t(P) * size_t(m) * sizeof(d4), e.s);
+          pf.bytes_h2d += 2LL * int64_t(P) * int64_t(m) * int64_t(sizeof(d4));
         }
         const StepParams prm = make_params(c, tick, Tn, init);
         sum_partials<<<blocks(m, 256), 256, 0, e.s>>>(m, P, e.ra, e.rj, e.ca, e.cj);
         check_launch(debug_sync, e.s, "sum_partials");
         launch_correct(e, m, prm, r);
       }
+      const auto t_c1 = clock::now();
+      pf.t_tn += init ? 0.0 : sec(t_tn0, t_tn1);
+      pf.t_select += sec(t_tn1, t_sel1);
+      pf.t_gather += sec(t_sel1, t_g1);  // Local gather + Allgatherv (+ staging copies).
+      pf.t_force += sec(t_g1, t_f1);
+      pf.t_xchg += sec(t_f1, t_x1);
+      pf.t_correct += sec(t_x1, t_c1);
+      pf.own_active_total += m;
+      if (m > pf.own_active_max) pf.own_active_max = m;
     } else
 #endif
     {
       // Peer-copy exchange between local devices. Parts are the devices; order is device order.
+      const auto t_g0 = clock::now();
       for (int g = 0; g < G; ++g) {
         Dev& e = d[size_t(g)];
         const int o = off[size_t(g)], m = na[size_t(g)];
@@ -676,8 +712,10 @@ struct Simulation::Impl {
           copy(d[size_t(h)].tv + o, e.tv + o, size_t(m) * sizeof(d4), e.s);
           copy(d[size_t(h)].tid + o, e.tid + o, size_t(m) * sizeof(int), e.s);
         }
+        pf.bytes_sent += int64_t(G - 1) * int64_t(m) * (2 * int64_t(sizeof(d4)) + int64_t(sizeof(int)));
         H4_CUDA(cudaEventRecord(e.ev_tx, e.s));
       }
+      const auto t_g1 = clock::now();
       for (int h = 0; h < G; ++h) {
         Dev& e = d[size_t(h)];
         use(e);
@@ -696,6 +734,7 @@ struct Simulation::Impl {
         }
         H4_CUDA(cudaEventRecord(e.ev_f, e.s));
       }
+      const auto t_f1 = clock::now();
       const StepParams prm = make_params(c, tick, Tn, init);
       for (int g = 0; g < G; ++g) {
         Dev& e = d[size_t(g)];
@@ -708,6 +747,20 @@ struct Simulation::Impl {
         check_launch(debug_sync, e.s, "sum_partials");
         launch_correct(e, m, prm, g);
       }
+      const auto t_c1 = clock::now();
+      // Peer path: force-result copies sit between force and correct; count them as t_xchg.
+      pf.t_tn += init ? 0.0 : sec(t_tn0, t_tn1);
+      pf.t_select += sec(t_tn1, t_sel1);
+      pf.t_gather += sec(t_g0, t_g1);
+      // Peer copies of forces sit in the force loop; they are in t_force (no separate sync).
+      pf.t_force += sec(t_g1, t_f1);
+      pf.t_correct += sec(t_f1, t_c1);
+      const int64_t active_bytes = 2 * int64_t(sizeof(d4)) + int64_t(sizeof(int));
+      pf.bytes_recv += int64_t(G - 1) * int64_t(NA) * active_bytes;
+      int own = 0;
+      for (int g = 0; g < G; ++g) own += na[size_t(g)];
+      pf.own_active_total += own;
+      if (own > pf.own_active_max) pf.own_active_max = own;
     }
     H4_CUDA(cudaGetLastError());
     T = Tn;
@@ -716,6 +769,8 @@ struct Simulation::Impl {
     ++mx.block_steps;
     mx.active_total += NA;
     mx.step_level_hist[detail::block_level(c.max_level, Tn)]++;
+    ++pf.steps;
+    pf.na_total += NA;
   }
 
 #ifdef H4NB_HAVE_MPI
@@ -757,6 +812,19 @@ Metrics Simulation::metrics(bool reset) {
   out.init_force_s = m.init_force_s;
   out.init_levels_s = m.init_levels_s;
   if (reset) m.mx = Metrics{};
+  return out;
+}
+
+RankProfile Simulation::profile(bool reset) {
+  Impl& m = *impl_;
+  RankProfile out = m.pf;
+  out.t_init_force = m.init_force_s;
+  if (reset) {
+    const double setup = m.pf.t_setup, initf = m.pf.t_init_force;
+    m.pf = RankProfile{};
+    m.pf.t_setup = setup;
+    m.pf.t_init_force = initf;
+  }
   return out;
 }
 
