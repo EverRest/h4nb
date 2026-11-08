@@ -46,7 +46,7 @@ class _FakePromHandler(BaseHTTPRequestHandler):
         if url.path == "/api/v1/query_range":
             fake.requests.append(query)
             metric = query["query"][0].split("{")[0]
-            name = "prom_%s.json" % metric[len("h4nb_"):]
+            name = fake.range_files.get(metric[len("h4nb_"):], "prom_%s.json" % metric[len("h4nb_"):])
             if os.path.exists(os.path.join(DATA_DIR, name)):
                 return self._send(_read_data(name))
             return self._send(b'{"status": "success", "data": {"resultType": "matrix", "result": []}}')
@@ -74,6 +74,7 @@ class FakePrometheus:
         self.url = "http://127.0.0.1:%d" % httpd.server_address[1]
         self.requests = []
         self.info_file = "prom_run_info.json"
+        self.range_files = {}  # Short metric name -> data file, to change the answer of one metric.
         self.running = True
 
     def stop(self):

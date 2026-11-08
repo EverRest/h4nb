@@ -604,3 +604,32 @@ def test_export_keeps_webm_when_ffmpeg_fails(server, fake_ffmpeg, monkeypatch):
     status, body = post(base, "/api/export?name=clip.webm", b"video", origin=base)
     assert status == 200 and body["mp4"] is False and body["path"].endswith("clip.webm")
     assert "Invalid data found" in body["mp4_error"]
+
+
+def test_series_nan_and_inf_become_null(prom_server):
+    base, fake = prom_server
+    fake.range_files = {"dissipated_work": "prom_dissipated_work.json"}
+    status, body = get_json(base, "/api/runs/eta~run1/series?names=dissipated_work&source=auto")
+    assert status == 200 and body["source"] == "prometheus"
+    series = body["series"]["dissipated_work"]
+    assert series["y"] == [None, None, 2e-9]
+    assert series["x"] == [0.0, 0.25, 0.5]
+
+
+def test_series_source_auto_reports_time_axis(prom_server):
+    base, _ = prom_server
+    _, body = get_json(base, "/api/runs/eta~run1/series?names=energy_rel_err&source=auto")
+    assert body["series"]["energy_rel_err"]["x_name"] == "time"
+
+
+def test_series_prometheus_without_label_is_503(prom_server):
+    base, fake = prom_server
+    fake.info_file = "prom_run_info_backfill.json"  # The run has no label in Prometheus.
+    status, body = get_json(base, "/api/runs/eta~run1/series?names=energy_rel_err&source=prometheus")
+    assert status == 503 and "error" in body
+
+
+def test_series_prometheus_name_outside_table_is_400(prom_server):
+    base, _ = prom_server
+    status, body = get_json(base, "/api/runs/eta~run1/series?names=period_max_rel_err&source=prometheus")
+    assert status == 400 and "error" in body

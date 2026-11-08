@@ -1,0 +1,4 @@
+{"status": "success", "data": {"resultType": "matrix", "result": [
+  {"metric": {"__name__": "h4nb_dissipated_work", "run": "eta/run1"},
+   "values": [[1700000000, "NaN"], [1700000015, "+Inf"], [1700000030, "2e-9"]]}
+]}}

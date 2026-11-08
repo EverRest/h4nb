@@ -209,6 +209,8 @@ class App:
         if source == "auto" and not any(out[n]["x"] for n in prom_names):
             # Prometheus has no samples for this run (scrape gap, or past its retention). The files may have them.
             return {"source": "files", "series": self.file_series(run_dir, names)}
+        # NaN and Inf from Prometheus become null, as in the file path. JSON has no NaN.
+        out = {n: {**s, "x": json_list(s["x"]), "y": json_list(s["y"])} for n, s in out.items()}
         rest = [n for n in names if n not in NAMES]
         out.update(self.file_series(run_dir, rest))
         return {"source": "prometheus", "series": {n: out[n] for n in names if n in out}}
