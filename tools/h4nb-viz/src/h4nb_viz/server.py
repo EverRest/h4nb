@@ -5,10 +5,12 @@ The page draws them. Errors are JSON objects: {"error": "<text>"}.
 """
 from __future__ import annotations
 
+import hmac
 import json
 import mimetypes
 import os
 import re
+import secrets
 import shutil
 import time
 import traceback
@@ -118,6 +120,9 @@ class App:
         self._clock = clock
         self._labels: Dict[str, str] = {}  # {start_utc: run label}, read at each rescan.
         self._labels_at: Optional[float] = None
+
+        # Every /api/ request must send this token. The page gets it from index.html (same origin only).
+        self.token = secrets.token_urlsafe(32)
 
     def run_dir(self, name: str) -> str:
         path = self.runs.runs().get(name)
@@ -239,9 +244,18 @@ class Handler(BaseHTTPRequestHandler):
         if self.headers.get("Host") not in ("127.0.0.1:%d" % port, "localhost:%d" % port):
             raise ApiError(403, "the Host header is not allowed")
 
+    def _check_token(self):
+        """Require the token of this server for every /api/ request."""
+        if not urllib.parse.urlsplit(self.path).path.startswith("/api/"):
+            return
+        given = self.headers.get("X-H4NB-Token", "")
+        if not hmac.compare_digest(given.encode("utf-8"), self.server.app.token.encode("utf-8")):
+            raise ApiError(403, "the token is missing or wrong")
+
     def do_GET(self):
         try:
             self._check_host()
+            self._check_token()
             self._route()
         except ApiError as err:
             self._json(err.status, {"error": err.message})
@@ -255,7 +269,7 @@ class Handler(BaseHTTPRequestHandler):
         query = urllib.parse.parse_qs(url.query)
         app = self.server.app
         if path == "/":
-            return self._file(app.web_dir, "index.html")
+            return self._index(app)
         if path.startswith("/web/"):
             return self._file(app.web_dir, path[len("/web/"):])
         if path == "/api/status":
@@ -283,6 +297,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         try:
             self._check_host()
+            self._check_token()
             self._post_route()
         except ApiError as err:
             self._json(err.status, {"error": err.message})
@@ -309,6 +324,15 @@ class Handler(BaseHTTPRequestHandler):
         data = self.rfile.read(int(length))
         path = save_export(self.server.app.export_dir, name, data)
         self._json(200, {"path": path, "mp4": False})  # MP4 conversion is added in T026.
+
+    def _index(self, app: App):
+        """The page. The token is written into it, so the page can call the API."""
+        full = os.path.join(app.web_dir, "index.html")
+        if not os.path.isfile(full):
+            raise ApiError(404, "no such file")
+        with open(full, "rb") as f:
+            body = f.read().replace(b"__H4NB_TOKEN__", app.token.encode("utf-8"))
+        self._bytes(200, "text/html; charset=utf-8", body, {"Cache-Control": "no-store"})
 
     def _file(self, base: str, rel: str):
         full = os.path.normpath(os.path.join(base, rel))

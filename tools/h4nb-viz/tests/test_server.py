@@ -14,30 +14,37 @@ from h4nb_viz.fake import write_fake_run
 from h4nb_viz.snapshots import FRAME_HEADER, FRAME_MAGIC
 
 
+_TOKEN = {"value": ""}  # The token of the running test server.
+
+
 @pytest.fixture
 def server(fake_root, tmp_path):
     web = tmp_path / "web"
     web.mkdir()
-    (web / "index.html").write_text("<!doctype html><title>h4nb-viz</title>")
+    (web / "index.html").write_text('<!doctype html><meta name="h4nb-token" content="__H4NB_TOKEN__"><title>h4nb-viz</title>')
     (web / "app.js").write_text("console.log(1);")
     httpd = make_server(fake_root, port=0, export_dir=str(tmp_path / "exports"), web_dir=str(web))
+    _TOKEN["value"] = getattr(httpd.app, "token", "")
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
     yield "http://127.0.0.1:%d" % httpd.server_address[1], httpd
     httpd.shutdown()
     httpd.server_close()
 
 
-def get(base, path):
-    """Return (status, headers, body) for a GET request. Error responses are returned, not raised."""
+def get(base, path, token=None):
+    """Return (status, headers, body) for a GET request. Error responses are returned, not raised.
+    The token header is the one of the test server, unless `token` is given."""
+    token = _TOKEN["value"] if token is None else token
+    request = urllib.request.Request(base + path, headers={"X-H4NB-Token": token})
     try:
-        with urllib.request.urlopen(base + path, timeout=10) as r:
+        with urllib.request.urlopen(request, timeout=10) as r:
             return r.status, dict(r.headers), r.read()
     except urllib.error.HTTPError as err:
         return err.code, dict(err.headers), err.read()
 
 
-def get_json(base, path):
-    status, _, body = get(base, path)
+def get_json(base, path, token=None):
+    status, _, body = get(base, path, token)
     return status, json.loads(body)
 
 
@@ -178,7 +185,7 @@ def test_json_list_turns_nan_into_none():
 
 def post(base, path, body=b"", origin=None):
     """Return (status, body) for a POST request. The origin header is sent when given."""
-    headers = {"Content-Type": "application/octet-stream"}
+    headers = {"Content-Type": "application/octet-stream", "X-H4NB-Token": _TOKEN["value"]}
     if origin is not None:
         headers["Origin"] = origin
     request = urllib.request.Request(base + path, data=body, headers=headers, method="POST")
@@ -220,9 +227,11 @@ def test_export_rejects_bad_names(server):
     assert post(base, "/api/nothing", b"x", origin=base)[0] == 404
 
 
-def call(base, path, method="GET", host=None, origin=None, body=b""):
-    """Return (status, body) for one request. `host` sets the Host header, to test DNS rebinding."""
-    headers = {"Content-Type": "application/octet-stream"}
+def call(base, path, method="GET", host=None, origin=None, body=b"", token=None):
+    """Return (status, body) for one request. `host` sets the Host header, to test DNS rebinding.
+    `token` defaults to the token of the test server. Pass "" to send no token."""
+    headers = {"Content-Type": "application/octet-stream",
+               "X-H4NB-Token": _TOKEN["value"] if token is None else token}
     if host is not None:
         headers["Host"] = host
     if origin is not None:
@@ -292,6 +301,7 @@ def prom_server(fake_root, tmp_path, fake_prometheus):
     (web / "index.html").write_text("<!doctype html><title>h4nb-viz</title>")
     httpd = make_server(fake_root, port=0, export_dir=str(tmp_path / "exports"), web_dir=str(web),
                         prometheus=fake_prometheus.url, grafana_url="http://127.0.0.1:3000")
+    _TOKEN["value"] = httpd.app.token
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
     yield "http://127.0.0.1:%d" % httpd.server_address[1], fake_prometheus
     httpd.shutdown()
@@ -358,3 +368,37 @@ def test_series_origin_filter(prom_server):
     get_json(base, "/api/runs/eta~run1/series?names=energy_rel_err&source=auto")
     assert all('origin!="backfill"' in r["query"][0] for r in fake.requests)
     assert fake.requests  # The query did reach the fake.
+
+
+def test_api_request_without_token_is_refused(server):
+    base, _ = server
+    status, body = call(base, "/api/status", token="")
+    assert status == 403 and "error" in body
+
+
+def test_api_request_with_wrong_token_is_refused(server):
+    base, _ = server
+    assert call(base, "/api/runs", token="guess")[0] == 403
+
+
+def test_api_request_with_token_is_served(server):
+    base, _ = server
+    assert call(base, "/api/status")[0] == 200
+
+
+def test_export_without_token_is_refused(server):
+    base, _ = server
+    status, body = call(base, "/api/export?name=t.png", method="POST", origin=base, body=b"1", token="")
+    assert status == 403 and "error" in body
+
+
+def test_index_page_carries_the_token_and_needs_none(server):
+    base, _ = server
+    status, _, body = get(base, "/", token="")
+    assert status == 200
+    assert _TOKEN["value"].encode() in body
+
+
+def test_static_files_need_no_token(server):
+    base, _ = server
+    assert get(base, "/web/app.js", token="")[0] == 200

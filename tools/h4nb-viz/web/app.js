@@ -1,6 +1,7 @@
 // Page logic of h4nb-viz: run list, time slider, playback, keys, presentation mode, themes,
 // movie recording and file export. Spec: specs/003-run-visualization (US1, US3, V6, FR-011).
 // Drawing is in scene.js, plots in plots.js, export helpers in record.js and card.js.
+import "./api.js"; // Adds the token to the API requests. Must load first.
 import { FrameLoader, View, drawColorBar } from "./scene.js";
 import { Plots } from "./plots.js";
 import { Recorder, extensionFor, saveFile, stamp, uploadExport } from "./record.js";
