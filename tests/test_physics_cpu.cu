@@ -2,6 +2,7 @@
 #include <cmath>
 #include <cstdio>
 #include <memory>
+#include <random>
 #include "scenarios.hpp"
 
 // LinearDrag (A2): one drag particle, tau = 1, v0 = (1, 0, 0), fixed steps h = 1/8 ... 1/256, end t = 1.
@@ -64,7 +65,67 @@ void cold_start_triangle() {
   CHECK(sim.status() == 0);
 }
 
+// A8: block mode (Aarseth step). The energy error after t = 6.25 for eta = 1e-4, 2.5e-5, 6.25e-6. The levels go 2, 3, 4
+// (the step scales as sqrt(eta), levels are powers of two). A 4th-order scheme gives a ratio of about 16 per level.
+// The bound is 8, loose on purpose, and it stays above the round-off floor (about 1e-14).
+static void block_eta_scan() {
+  const double etas[3] = {1e-4, 2.5e-5, 6.25e-6};
+  double err[3];
+  for (int k = 0; k < 3; ++k) {
+    const TwoBody tb = two_body(0.1, 1e-3, false);
+    h4nb::Config c;
+    c.eta = etas[k];
+    c.dt_max = 1.0 / 64;
+    c.max_level = 30;
+    ref::Ref sim(tb.p, c);
+    const double E0 = ref::direct_diagnostics(tb.p, c.G, c.eps2).E;
+    sim.advance_to(6.25);
+    const double E1 = ref::direct_diagnostics(sim.state(), c.G, c.eps2).E;
+    err[k] = std::fabs(E1 - E0) / std::fabs(E0);
+    std::printf("block eta=%.3f: |dE/E|=%.3e\n", etas[k], err[k]);
+    CHECK(sim.status() == 0);
+  }
+  CHECK(err[0] > err[1] && err[1] > err[2]);
+  CHECK(err[0] / err[1] > 8.0 && err[1] / err[2] > 8.0);
+}
+
+// A8: softened cluster (Plummer softening, eps2 > 0). 64 equal masses in a ball, random velocities, one time unit.
+// The bound is energy error. No Newtonian shortcut: this checks the softened force in the full step.
+static void softened_cluster_energy() {
+  const int n = 64;
+  std::mt19937_64 rng(7);
+  std::uniform_real_distribution<double> u(-1.0, 1.0);
+  h4nb::Particles p;
+  p.resize(n);
+  for (int i = 0; i < n; ++i) {
+    double x, y, z;
+    do {
+      x = u(rng); y = u(rng); z = u(rng);
+    } while (x * x + y * y + z * z > 1.0);
+    p.id[i] = i;
+    p.m[i] = 1.0 / n;
+    p.x[i] = x; p.y[i] = y; p.z[i] = z;
+    p.vx[i] = 0.3 * u(rng); p.vy[i] = 0.3 * u(rng); p.vz[i] = 0.3 * u(rng);
+  }
+  h4nb::Config c;
+  c.eps2 = 0.01;
+  c.eta = 0.01;
+  c.dt_max = 1.0 / 64;
+  c.max_level = 30;
+  ref::Ref sim(p, c);
+  const double E0 = ref::direct_diagnostics(p, c.G, c.eps2).E;
+  CHECK(E0 < 0);  // Bound cluster.
+  sim.advance_to(1.0);
+  const double E1 = ref::direct_diagnostics(sim.state(), c.G, c.eps2).E;
+  const double rel = std::fabs(E1 - E0) / std::fabs(E0);
+  std::printf("softened cluster N=%d: |dE/E|=%.3e status=%u\n", n, rel, sim.status());
+  CHECK(sim.status() == 0);
+  CHECK(rel < 1e-6);
+}
+
 int main() {
+  block_eta_scan();
+  softened_cluster_energy();
   linear_drag_convergence_order4();
   cold_start_triangle();
   auto make = [](const h4nb::Particles& p, const h4nb::Config& c) { return std::make_unique<ref::Ref>(p, c); };
