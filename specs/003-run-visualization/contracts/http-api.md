@@ -1,8 +1,16 @@
 # Contract: HTTP API of the h4nb-viz server
 
-The server listens on `127.0.0.1:<port>` (default 8820). All endpoints are `GET` unless stated. JSON is UTF-8. Errors are JSON `{"error": "<text>"}` with status 400 (bad request), 404 (no such run, frame or file) or 503 (Prometheus not reachable, only on `source=prometheus`).
+The server listens on `127.0.0.1:<port>` (default 8820).
 
-`{run}` is the run name: the path of the run directory relative to the root directory, with `/` replaced by `~` (for archives: `<archive name>~<subdirectory>`).
+All endpoints use `GET` unless stated otherwise. JSON is UTF-8.
+
+An error returns the JSON `{"error": "<text>"}`.
+
+- The status is 400 for a bad request.
+- The status is 404 for no such run, frame or file.
+- The status is 503 when Prometheus is not reachable. The 503 status occurs only for `source=prometheus`.
+
+`{run}` is the run name. It is the path of the run directory, relative to the root directory, with `/` replaced by `~`. For archives, it is `<archive name>~<subdirectory>`.
 
 ## Static
 
@@ -63,19 +71,19 @@ The run card and the frame list.
  "final_energy_rel_err": 3.1e-9, "wall_s": 5123.4}
 ```
 
-`info` is `run_info.txt`, `config` is `config.used` (values as text). A missing file gives `{}`. The frame list is sorted by `time`; `snap_final.snap` is the last frame if its time is larger than the last numbered snapshot.
+`info` is `run_info.txt`. `config` is `config.used`, with the values as text. A missing file gives `{}`. The frame list is sorted by `time`. `snap_final.snap` is the last frame when its time is larger than the time of the last numbered snapshot.
 
 ## `GET /api/runs/{run}/ids?max_points=200000&seed=1`
 
-Binary. The IDs of the subset (plan DD3), `uint32` little-endian if all IDs fit, else `int64` (header `X-H4NB-Id-Type: u32|i64`). Header `X-H4NB-Count`. The central body is the first ID.
+The response is binary. It holds the IDs of the subset (plan DD3). It uses `uint32` little-endian when all IDs fit. Otherwise, it uses `int64`. The header `X-H4NB-Id-Type` is `u32` or `i64`. The header `X-H4NB-Count` gives the number of IDs. The central body is the first ID.
 
 ## `GET /api/runs/{run}/frames/{index}?max_points=200000&seed=1&fields=pos,vel`
 
-Binary frame, see `frame-format.md` section 1. The particle order is the order of `/ids`. `fields` selects `pos` (always), `vel`, `mass`.
+The response is a binary frame. See `frame-format.md` section 1. The particle order is the order of `/ids`. The `fields` value selects `pos`, `vel` and `mass`. `pos` is always included.
 
 ## `GET /api/runs/{run}/derived/{index}?max_points=200000&seed=1&q=speed,r,e,inc`
 
-Binary. One `float32` array per requested quantity, in the order of `q`, each with the particle order of `/ids`. `e` and `inc` follow research.md R7. For `e` ≥ 1, `e` is the value and `inc` is computed the same way.
+The response is binary. It holds one `float32` array for each requested quantity, in the order of `q`. Each array uses the particle order of `/ids`. `e` and `inc` follow research.md R7. For `e` ≥ 1, the value of `e` is kept. Compute `inc` the same way.
 
 ## `GET /api/runs/{run}/hist/{index}?q=e&bins=50`
 
@@ -114,11 +122,19 @@ Name table (one table in `prometheus.py` and `tables.py`). The Prometheus column
 | `eta_seconds` | `h4nb_eta_seconds` | none: the server computes it with the rule of specs/002 section 6 |
 | `period_max_rel_err` | `h4nb_period_max_rel_err` | `energy_periods.dat:max_rel_err` (x = `period`) |
 
-`bench.dat` and `study.dat` are files only: `GET /api/runs/{run}/table/{name}` returns `{"columns": [...], "rows": [[...]]}`.
+`bench.dat` and `study.dat` exist only as files. `GET /api/runs/{run}/table/{name}` returns `{"columns": [...], "rows": [[...]]}`.
 
 ## `POST /api/export`
 
-Body: the recorded media (`video/webm` or `video/mp4`) or a PNG. Query: `name=<file name>`, `mp4=1` to convert with `ffmpeg`. The server writes into the export directory (`--export-dir`, default `~/h4nb-viz-exports`). Response `{"path": "...", "mp4": true}`. Only from the page origin (check of the `Origin` header).
+The body holds the recorded media (`video/webm` or `video/mp4`) or a PNG.
+
+The query takes `name=<file name>`. Add `mp4=1` to convert with `ffmpeg`.
+
+The server writes into the export directory (`--export-dir`, default `~/h4nb-viz-exports`).
+
+The response is `{"path": "...", "mp4": true}`.
+
+Only the page origin may call this endpoint. The server checks the `Origin` header.
 
 ## `POST /api/runs/{run}/paraview` (Phase 3)
 
@@ -128,25 +144,33 @@ Writes `.pvd` + `.vtp` into the export directory. Response `{"path": ".../run1.p
 
 - `127.0.0.1` only. No CORS headers. `POST` needs `Origin` equal to the server origin.
 - The server serves files only from `web/`. It never serves a path from the request in a run directory.
-- `{run}` must be in the current run list; else 404.
+- `{run}` must be in the current run list. Otherwise, the server returns 404.
 
 ## Run name and label
 
-`{run}` is the 003 name: the directory path relative to the root, with `/` replaced by `~`. The Prometheus label is the run label of specs/002. The two can differ. The specs/002 label is a relative path (see specs/002 `spec.md`, Key Entities). The server keeps both: the 003 name for URLs and the 002 label for queries.
+`{run}` is the 003 name. It is the directory path relative to the root, with `/` replaced by `~`.
+
+The Prometheus label is the run label of specs/002. The two can differ. The specs/002 label is a relative path (see specs/002 `spec.md`, Key Entities).
+
+The server keeps both names. It uses the 003 name for URLs and the 002 label for queries.
 
 The Grafana link of specs/002 sends the 002 label in the URL fragment. The link is defined in `specs/002-run-metrics/contracts/links.md`. This file does not copy it.
 
 The page decodes the percent-encoded fragment value first. Then it matches the whole value with the field `prom_label` of the run in `/api/runs`. It does not match the last part of the label. Two runs can share a last part, for example `eta/run1` and `scan/run1`.
 
-Hash rule: the fragment is `#run=<label>`. The page reads the text after `run=` and applies `decodeURIComponent` once. The page compares the result with `prom_label` of each run in `/api/runs`, exactly, with no trimming and no case change.
+Hash rule: the fragment is `#run=<label>`. The page reads the text after `run=` and applies `decodeURIComponent` once. The page compares the result with `prom_label` of each run in `/api/runs`. The comparison is exact: no trimming and no case change.
 
 Match rule:
 - Exactly one run has `prom_label` equal to the decoded value: the page selects that run and opens its time range.
 - No run matches: the page selects no run and shows the message "No run with label VALUE in this root directory. Check the root directory of h4nb-viz." VALUE is the decoded fragment. The page does not guess a run from the last part of the label.
-- Two or more runs match (not expected, because `prom_label` values come from unique Prometheus labels): the page selects none and shows "Several runs match VALUE."
+- Two or more runs match. This is not expected, because each `prom_label` is a unique Prometheus label. The page selects none and shows "Several runs match VALUE."
 - The page does not use the 003 name (`~` form) for this match.
 
-`prom_label` is the `run` label of the `h4nb_run_info` series that matches the run. The server takes it from the Prometheus response at each rescan. It is `null` when no series matches. A run with `prom_label` = `null` does not match any fragment. `in_prometheus` is `true` when `prom_label` is not `null`.
+`prom_label` is the `run` label of the `h4nb_run_info` series that matches the run. The server takes it from the Prometheus response at each rescan.
+
+When no series matches, `prom_label` is `null`. A run with `prom_label` = `null` does not match any fragment.
+
+`in_prometheus` is `true` only when `prom_label` is not `null`.
 
 ## Open questions
 
