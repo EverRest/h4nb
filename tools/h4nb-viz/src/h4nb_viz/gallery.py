@@ -7,6 +7,10 @@ from __future__ import annotations
 
 import csv
 import io
+import math
+import os
+import shutil
+import subprocess
 from importlib import resources
 from typing import List, Optional
 
@@ -81,3 +85,62 @@ def cluster_frames(n: int = 8000, frames: int = 120, t_end: float = 40.0, seed: 
     e = np.sqrt(rng.uniform(0.0, 0.95 ** 2, n))
     inc = np.arccos(rng.uniform(-1.0, 1.0, n))
     return _random_orbits(rng, a, e, inc, frames, t_end)
+
+
+def _turn(pos: np.ndarray, azimuth: float, tilt: float) -> np.ndarray:
+    ca, sa = math.cos(azimuth), math.sin(azimuth)
+    x = ca * pos[:, 0] - sa * pos[:, 1]
+    y = sa * pos[:, 0] + ca * pos[:, 1]
+    z = pos[:, 2]
+    ct, st = math.cos(tilt), math.sin(tilt)
+    return np.column_stack([x, ct * y - st * z, st * y + ct * z])
+
+
+def _glow(img: np.ndarray) -> np.ndarray:
+    near = sum(np.roll(np.roll(img, dy, 0), dx, 1) for dy in (-1, 0, 1) for dx in (-1, 0, 1)) - img
+    return img + 0.5 * near / 8.0
+
+
+def _colors(v: np.ndarray) -> np.ndarray:
+    """0..1 to a warm color: dark red, orange, yellow, white."""
+    r = np.clip(1.6 * v, 0.0, 1.0)
+    g = np.clip(1.6 * v - 0.4, 0.0, 1.0)
+    b = np.clip(1.6 * v - 1.0, 0.0, 1.0)
+    return np.stack([r, g, b], axis=-1)
+
+
+def render(pos: np.ndarray, size: int = 480, extent: float = 1.0, azimuth: float = 0.0, tilt: float = 0.0,
+           center: bool = True) -> np.ndarray:
+    """Project the points (shape (k, 3)) onto an RGB image of shape (size, size, 3), dtype uint8."""
+    img = np.zeros((size, size))
+    if pos.shape[0] > 0:
+        p = _turn(pos, azimuth, tilt)
+        ix = np.rint((p[:, 0] / extent + 1.0) * 0.5 * (size - 1)).astype(int)
+        iy = np.rint((1.0 - (p[:, 1] / extent + 1.0) * 0.5) * (size - 1)).astype(int)
+        keep = (ix >= 0) & (ix < size) & (iy >= 0) & (iy < size)
+        np.add.at(img, (iy[keep], ix[keep]), 1.0)
+        img = _glow(img)
+    if center:
+        c = (size - 1) // 2
+        img[max(c - 1, 0):c + 2, max(c - 1, 0):c + 2] = max(img.max(), 1.0)
+    v = np.log1p(img)
+    top = v.max()
+    if top > 0:
+        v = v / top
+    return (_colors(v) * 255.0).astype(np.uint8)
+
+
+def write_gif(images: List[np.ndarray], path: str, fps: int = 20) -> None:
+    """Write the RGB images as a looping GIF with ffmpeg. The file appears only when it is complete."""
+    exe = shutil.which("ffmpeg")
+    if exe is None:
+        raise RuntimeError("ffmpeg is not on PATH")
+    h, w, _ = images[0].shape
+    tmp = path + ".tmp.gif"
+    cmd = [exe, "-y", "-loglevel", "error", "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", "%dx%d" % (w, h),
+           "-r", str(fps), "-i", "-",
+           "-filter_complex", "[0:v]split[a][b];[a]palettegen=max_colors=96:stats_mode=diff[p];[b][p]paletteuse=dither=bayer:bayer_scale=3:diff_mode=rectangle",
+           "-loop", "0", tmp]
+    data = b"".join(np.ascontiguousarray(img, dtype=np.uint8).tobytes() for img in images)
+    subprocess.run(cmd, input=data, check=True, timeout=300)
+    os.replace(tmp, path)

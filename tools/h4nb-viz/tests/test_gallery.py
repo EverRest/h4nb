@@ -1,4 +1,5 @@
 import math
+import shutil
 
 import numpy as np
 import pytest
@@ -82,3 +83,41 @@ def test_agn_disk_is_thin_and_in_range():
     r = np.linalg.norm(pos[:, :2], axis=1)
     assert r.min() > 0.5 and r.max() < 13.0
     assert np.abs(pos[:, 2]).max() < 0.05 * r.max()
+
+
+def test_render_empty_is_black():
+    img = gallery.render(np.zeros((0, 3)), size=32, center=False)
+    assert img.shape == (32, 32, 3)
+    assert img.dtype == np.uint8
+    assert img.max() == 0
+
+
+def test_render_point_at_origin_lights_the_middle():
+    img = gallery.render(np.zeros((1, 3)), size=33, center=False)
+    assert img[16, 16].sum() > 0
+    assert img[0, 0].sum() == 0
+
+
+def test_render_center_marker():
+    img = gallery.render(np.zeros((0, 3)), size=33, center=True)
+    assert img[16, 16].sum() > 0
+
+
+def test_render_drops_points_outside_the_view():
+    img = gallery.render(np.array([[5.0, 5.0, 0.0]]), size=32, extent=1.0, center=False)
+    assert img.max() == 0
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg is not on PATH")
+def test_write_gif(tmp_path):
+    images = [gallery.render(np.random.default_rng(i).uniform(-1, 1, (50, 3)), size=32) for i in range(3)]
+    path = tmp_path / "x.gif"
+    gallery.write_gif(images, str(path), fps=10)
+    assert path.read_bytes()[:6] == b"GIF89a"
+    assert not (tmp_path / "x.gif.tmp.gif").exists()
+
+
+def test_write_gif_without_ffmpeg(monkeypatch, tmp_path):
+    monkeypatch.setattr(gallery.shutil, "which", lambda name: None)
+    with pytest.raises(RuntimeError, match="ffmpeg"):
+        gallery.write_gif([np.zeros((8, 8, 3), np.uint8)], str(tmp_path / "x.gif"))
