@@ -50,15 +50,28 @@ def test_s2_is_at_pericentre_at_tp():
     assert r == pytest.approx(1.0 - s2["e"], rel=1e-6)
 
 
-@pytest.mark.parametrize("make", [
-    lambda: gallery.s_star_frames(gallery.load_s_stars(), frames=5),
-    lambda: gallery.agn_disk_frames(n=500, frames=5),
-    lambda: gallery.cluster_frames(n=500, frames=5),
+@pytest.mark.parametrize("name", ["S14", "S175"])
+def test_other_star_is_at_pericentre_at_its_own_tp(name):
+    # a is scaled to S2 by the Kepler rule from the period: a = (P / P_S2) ** (2/3).
+    stars = gallery.load_s_stars()
+    s2 = next(s for s in stars if s["name"] == "S2")
+    s = next(s for s in stars if s["name"] == name)
+    frames = gallery.s_star_frames([s2, s], start=s["tp_year"] - 1.0, end=s["tp_year"], frames=2)
+    r = np.linalg.norm(frames[-1][1])
+    expected = (s["p_year"] / s2["p_year"]) ** (2.0 / 3.0) * (1.0 - s["e"])
+    assert r == pytest.approx(expected, rel=1e-6)
+
+
+@pytest.mark.parametrize("make, count", [
+    (lambda: gallery.s_star_frames(gallery.load_s_stars(), frames=5), len(gallery.load_s_stars())),
+    (lambda: gallery.agn_disk_frames(n=500, frames=5), 500),
+    (lambda: gallery.cluster_frames(n=500, frames=5), 500),
 ])
-def test_scene_frames_have_constant_shape(make):
+def test_scene_frames_have_constant_shape(make, count):
     frames = make()
     assert len(frames) == 5
     k = frames[0].shape[0]
+    assert k == count
     for f in frames:
         assert f.shape == (k, 3)
         assert np.all(np.isfinite(f))
@@ -68,4 +81,4 @@ def test_agn_disk_is_thin_and_in_range():
     pos = gallery.agn_disk_frames(n=2000, frames=1)[0]
     r = np.linalg.norm(pos[:, :2], axis=1)
     assert r.min() > 0.5 and r.max() < 13.0
-    assert np.abs(pos[:, 2]).max() < 0.1 * r.max()
+    assert np.abs(pos[:, 2]).max() < 0.05 * r.max()
