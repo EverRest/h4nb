@@ -24,3 +24,48 @@ def test_s_star_periods_follow_kepler():
     for s in stars:
         expected = s2["p_year"] * (s["a_arcsec"] / s2["a_arcsec"]) ** 1.5
         assert s["p_year"] == pytest.approx(expected, rel=0.05), s["name"]
+
+
+from h4nb_viz.fake import kepler_state
+
+
+def test_kepler_state_high_e_keeps_energy():
+    # The S-stars have e up to about 0.98. The specific energy must be -1 / (2a) at each time.
+    a = np.full(8, 1.0)
+    e = np.full(8, 0.98)
+    zero = np.zeros(8)
+    m0 = np.linspace(0.0, 2 * math.pi, 8, endpoint=False)
+    for t in (0.0, 0.3, 1.7, 5.0):
+        pos, vel = kepler_state(a, e, zero, zero, zero, m0, t)
+        r = np.linalg.norm(pos, axis=1)
+        energy = 0.5 * np.sum(vel * vel, axis=1) - 1.0 / r
+        assert np.allclose(energy, -0.5, atol=1e-9)
+
+
+def test_s2_is_at_pericentre_at_tp():
+    stars = gallery.load_s_stars()
+    s2 = next(s for s in stars if s["name"] == "S2")
+    frames = gallery.s_star_frames([s2], start=s2["tp_year"] - 1.0, end=s2["tp_year"], frames=2)
+    r = np.linalg.norm(frames[-1][0])
+    assert r == pytest.approx(1.0 - s2["e"], rel=1e-6)
+
+
+@pytest.mark.parametrize("make", [
+    lambda: gallery.s_star_frames(gallery.load_s_stars(), frames=5),
+    lambda: gallery.agn_disk_frames(n=500, frames=5),
+    lambda: gallery.cluster_frames(n=500, frames=5),
+])
+def test_scene_frames_have_constant_shape(make):
+    frames = make()
+    assert len(frames) == 5
+    k = frames[0].shape[0]
+    for f in frames:
+        assert f.shape == (k, 3)
+        assert np.all(np.isfinite(f))
+
+
+def test_agn_disk_is_thin_and_in_range():
+    pos = gallery.agn_disk_frames(n=2000, frames=1)[0]
+    r = np.linalg.norm(pos[:, :2], axis=1)
+    assert r.min() > 0.5 and r.max() < 13.0
+    assert np.abs(pos[:, 2]).max() < 0.1 * r.max()
