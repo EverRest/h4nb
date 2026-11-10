@@ -1,4 +1,5 @@
 import math
+import os
 import shutil
 
 import numpy as np
@@ -106,6 +107,57 @@ def test_render_center_marker():
 def test_render_drops_points_outside_the_view():
     img = gallery.render(np.array([[5.0, 5.0, 0.0]]), size=32, extent=1.0, center=False)
     assert img.max() == 0
+
+
+def test_render_point_upper_right():
+    img = gallery.render(np.array([[0.5, 0.5, 0.0]]), size=33, extent=1.0, azimuth=0.0, tilt=0.0, center=False)
+    rows, cols = np.nonzero(img.sum(axis=2))
+    assert rows.max() < 16 and cols.min() > 16
+
+
+def test_render_point_lower_left():
+    img = gallery.render(np.array([[-0.5, -0.5, 0.0]]), size=33, extent=1.0, azimuth=0.0, tilt=0.0, center=False)
+    rows, cols = np.nonzero(img.sum(axis=2))
+    assert rows.min() > 16 and cols.max() < 16
+
+
+def test_render_two_points_in_one_pixel_are_brighter():
+    # The frame is normalised to its own peak. Four far points set the same peak in both frames.
+    far = np.array([[-0.5, -0.5, 0.0]] * 4)
+    one = gallery.render(np.vstack([[[0.5, 0.5, 0.0]], far]), size=33, extent=1.0, center=False)
+    two = gallery.render(np.vstack([[[0.5, 0.5, 0.0]] * 2, far]), size=33, extent=1.0, center=False)
+    assert two[8, 24].astype(int).sum() > one[8, 24].astype(int).sum()
+
+
+def _fake_ffmpeg(tmp_path, monkeypatch, body):
+    exe = tmp_path / "bin" / "ffmpeg"
+    exe.parent.mkdir()
+    exe.write_text("#!/bin/sh\n" + body)
+    exe.chmod(0o755)
+    monkeypatch.setenv("PATH", str(exe.parent) + os.pathsep + os.environ["PATH"])
+
+
+def test_write_gif_failure_reports_stderr_and_removes_tmp(tmp_path, monkeypatch):
+    # The fake ffmpeg makes the temporary file, prints to stderr and fails.
+    _fake_ffmpeg(tmp_path, monkeypatch, 'for last; do :; done\necho partial > "$last"\necho boom-from-ffmpeg >&2\nexit 1\n')
+    path = tmp_path / "x.gif"
+    with pytest.raises(RuntimeError, match="ffmpeg failed: .*boom-from-ffmpeg"):
+        gallery.write_gif([np.zeros((8, 8, 3), np.uint8)], str(path))
+    assert not (tmp_path / "x.gif.tmp.gif").exists()
+    assert not path.exists()
+
+
+def test_write_gif_timeout_removes_tmp(tmp_path, monkeypatch):
+    _fake_ffmpeg(tmp_path, monkeypatch, 'for last; do :; done\necho partial > "$last"\nexec sleep 30\n')
+    monkeypatch.setattr(gallery, "FFMPEG_TIMEOUT", 1)
+    with pytest.raises(RuntimeError, match="ffmpeg timed out"):
+        gallery.write_gif([np.zeros((8, 8, 3), np.uint8)], str(tmp_path / "x.gif"))
+    assert not (tmp_path / "x.gif.tmp.gif").exists()
+
+
+def test_write_gif_without_images(tmp_path):
+    with pytest.raises(ValueError, match="no images to write"):
+        gallery.write_gif([], str(tmp_path / "x.gif"))
 
 
 @pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg is not on PATH")

@@ -18,6 +18,7 @@ import numpy as np
 
 from .fake import TWO_PI, kepler_state
 
+FFMPEG_TIMEOUT = 300  # seconds
 FIELDS = ("a_arcsec", "e", "i_deg", "node_deg", "peri_deg", "tp_year", "p_year")
 
 
@@ -132,6 +133,8 @@ def render(pos: np.ndarray, size: int = 480, extent: float = 1.0, azimuth: float
 
 def write_gif(images: List[np.ndarray], path: str, fps: int = 20) -> None:
     """Write the RGB images as a looping GIF with ffmpeg. The file appears only when it is complete."""
+    if not images:
+        raise ValueError("no images to write")
     exe = shutil.which("ffmpeg")
     if exe is None:
         raise RuntimeError("ffmpeg is not on PATH")
@@ -142,7 +145,17 @@ def write_gif(images: List[np.ndarray], path: str, fps: int = 20) -> None:
            "-filter_complex", "[0:v]split[a][b];[a]palettegen=max_colors=96:stats_mode=diff[p];[b][p]paletteuse=dither=bayer:bayer_scale=3:diff_mode=rectangle",
            "-loop", "0", tmp]
     data = b"".join(np.ascontiguousarray(img, dtype=np.uint8).tobytes() for img in images)
-    subprocess.run(cmd, input=data, check=True, timeout=300)
+    try:
+        try:
+            run = subprocess.run(cmd, input=data, capture_output=True, timeout=FFMPEG_TIMEOUT)
+        except subprocess.TimeoutExpired:
+            raise RuntimeError("ffmpeg timed out") from None
+        if run.returncode != 0:
+            raise RuntimeError("ffmpeg failed: " + run.stderr.decode(errors="replace"))
+    except BaseException:
+        if os.path.exists(tmp):
+            os.remove(tmp)
+        raise
     os.replace(tmp, path)
 
 
