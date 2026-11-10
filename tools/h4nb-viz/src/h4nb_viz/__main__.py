@@ -2,6 +2,7 @@
 
   h4nb-viz fake OUT_DIR [--n 20000] [--snaps 60] [--t-end 6.3125]
   h4nb-viz thin RUN_DIR OUT_DIR [--max-points 200000] [--seed 1]
+  h4nb-viz gallery OUT_DIR [--frames 120] [--size 480] [--fps 20]
   h4nb-viz serve ROOT [--port 8820] [--export-dir DIR] [--no-browser] [--prometheus URL] [--grafana URL]
 """
 from __future__ import annotations
@@ -12,6 +13,7 @@ import sys
 from typing import List, Optional
 
 from .fake import write_fake_run
+from .gallery import make_gallery
 from .server import serve
 from .thin import thin_run
 
@@ -31,6 +33,12 @@ def build_parser() -> argparse.ArgumentParser:
     thin.add_argument("out_dir", help="Directory of the thinned run.")
     thin.add_argument("--max-points", type=int, default=200000, help="Most particles per snapshot. Default: 200000.")
     thin.add_argument("--seed", type=int, default=1, help="Seed of the particle subset. Default: 1.")
+
+    gal = sub.add_parser("gallery", help="Write the README preview GIFs. Kepler motion, not an h4nb run.")
+    gal.add_argument("out_dir", help="Directory of the GIF files.")
+    gal.add_argument("--frames", type=int, default=180, help="Frames in each GIF. Default: 180.")
+    gal.add_argument("--size", type=int, default=480, help="Width and height in pixels. Default: 480.")
+    gal.add_argument("--fps", type=int, default=15, help="Frames per second. Default: 15.")
 
     srv = sub.add_parser("serve", help="Serve the runs under ROOT on 127.0.0.1.")
     srv.add_argument("root", help="Directory that holds the run directories.")
@@ -57,6 +65,13 @@ def main(argv: Optional[List[str]] = None) -> int:
             parser.error("RUN_DIR is not a directory: %s" % args.run_dir)
         written = thin_run(args.run_dir, args.out_dir, max_points=args.max_points, seed=args.seed)
         print("h4nb-viz: wrote %d thin snapshots to %s" % (len(written), os.path.abspath(args.out_dir)))
+        return 0
+    if args.command == "gallery":
+        try:
+            paths = make_gallery(args.out_dir, frames=args.frames, size=args.size, fps=args.fps)
+        except RuntimeError as err:
+            parser.error(str(err))
+        print("h4nb-viz: wrote %d GIF files to %s" % (len(paths), os.path.abspath(args.out_dir)))
         return 0
     if not os.path.isdir(args.root):
         parser.error("ROOT is not a directory: %s" % args.root)

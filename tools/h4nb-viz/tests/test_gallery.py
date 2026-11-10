@@ -121,3 +121,23 @@ def test_write_gif_without_ffmpeg(monkeypatch, tmp_path):
     monkeypatch.setattr(gallery.shutil, "which", lambda name: None)
     with pytest.raises(RuntimeError, match="ffmpeg"):
         gallery.write_gif([np.zeros((8, 8, 3), np.uint8)], str(tmp_path / "x.gif"))
+
+
+from h4nb_viz import __main__ as cli
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg is not on PATH")
+def test_make_gallery_writes_three_gifs(tmp_path):
+    paths = gallery.make_gallery(str(tmp_path), frames=3, size=48, fps=10)
+    assert [p.rsplit("/", 1)[-1] for p in paths] == list(gallery.GIFS)
+    for p in paths:
+        with open(p, "rb") as f:
+            assert f.read(6) == b"GIF89a"
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg is not on PATH")
+def test_cli_gallery(tmp_path, capsys):
+    assert cli.main(["gallery", str(tmp_path / "media"), "--frames", "3", "--size", "48"]) == 0
+    for name in gallery.GIFS:
+        assert (tmp_path / "media" / name).exists()
+    assert "3 GIF files" in capsys.readouterr().out

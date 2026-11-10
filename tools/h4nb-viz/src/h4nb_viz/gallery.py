@@ -144,3 +144,35 @@ def write_gif(images: List[np.ndarray], path: str, fps: int = 20) -> None:
     data = b"".join(np.ascontiguousarray(img, dtype=np.uint8).tobytes() for img in images)
     subprocess.run(cmd, input=data, check=True, timeout=300)
     os.replace(tmp, path)
+
+
+GIFS = ("s-stars.gif", "agn-disk.gif", "star-cluster.gif")
+
+
+def _extent(frames: List[np.ndarray], tilt: float) -> float:
+    """Half width that holds 98 % of the points over all frames, plus a margin."""
+    xy = np.concatenate([np.abs(_turn(f, 0.0, tilt)[:, :2]).max(axis=1) for f in frames])
+    return float(np.percentile(xy, 98.0)) * 1.15
+
+
+def make_gallery(out_dir: str, frames: int = 180, size: int = 480, fps: int = 15) -> List[str]:
+    """Write the three GIFs of GIFS into out_dir. Return their paths."""
+    os.makedirs(out_dir, exist_ok=True)
+    tilt_disk = math.radians(60.0)
+    tilt_cluster = math.radians(20.0)
+    scenes = [
+        # S-stars: fixed sky view (x and y on the sky), as in the published orbit plots.
+        (s_star_frames(load_s_stars(), frames=frames), 0.0, lambda i: 0.0),
+        # AGN disk: seen at 60 degrees, turning slowly.
+        (agn_disk_frames(frames=frames), tilt_disk, lambda i: math.radians(30.0) * i / max(frames - 1, 1)),
+        # Star cluster: one full turn.
+        (cluster_frames(frames=frames), tilt_cluster, lambda i: TWO_PI * i / max(frames, 1)),
+    ]
+    paths = []
+    for name, (scene, tilt, azimuth) in zip(GIFS, scenes):
+        extent = _extent(scene, tilt)
+        images = [render(pos, size=size, extent=extent, azimuth=azimuth(i), tilt=tilt) for i, pos in enumerate(scene)]
+        path = os.path.join(out_dir, name)
+        write_gif(images, path, fps=fps)
+        paths.append(path)
+    return paths
