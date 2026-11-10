@@ -44,6 +44,8 @@ The server prints a link with a token, and the browser opens it. The link works 
 | `h4nb-viz fake OUT_DIR [--n 20000] [--snaps 60] [--t-end 6.3125]` | Write a fake run. Use it to test the page. |
 | `h4nb-viz serve ROOT [--port 8820] [--export-dir DIR] [--no-browser] [--prometheus URL] [--grafana URL]` | Serve the runs under ROOT. If ROOT is a run, it is listed too. `--prometheus` reads the live curves. `--grafana` adds a link to Grafana. |
 
+- `h4nb-viz gallery OUT_DIR`: write three README preview GIFs (Kepler motion around one mass, not an h4nb run). It needs ffmpeg.
+
 ## Keys
 
 | Key | Action |

@@ -18,6 +18,37 @@ h4nb is a C++17/CUDA library for direct N-body simulation of gravitational syste
 
 ---
 
+## Gallery
+
+These previews show the kind of systems that h4nb computes: many bodies around one heavy central mass. Each preview shows the exact Kepler motion of test particles around one mass. They have no forces between the bodies. They are not h4nb runs.
+
+<details>
+<summary>Star cluster around a central mass</summary>
+
+![Star cluster around a central mass](docs/media/star-cluster.gif)
+
+Stars on orbits with random directions around the central mass. Each star has its own eccentricity.
+
+</details>
+
+<details>
+<summary>Dense star cluster core</summary>
+
+![Dense star cluster core](docs/media/star-cluster-core.gif)
+
+Most stars stay near the centre. Some stars move far out. This shows a concentrated core.
+
+</details>
+
+<details>
+<summary>Eccentric ring</summary>
+
+![Eccentric ring](docs/media/eccentric-ring.gif)
+
+300 stars on eccentric orbits (e from 0.6 to 0.97) around the central mass. Each star has a random orientation.
+
+</details>
+
 ## 1. The problem
 
 A researcher studies a disk or a cluster around one heavy body: for example gas clouds around an active galactic nucleus (AGN), or stars around a central mass. The total mass of the particles can be 10 % to 100 % of the central mass. So the central body is not fixed. It moves in the field of all other particles.
