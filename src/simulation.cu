@@ -212,6 +212,7 @@ struct Simulation::Impl {
   std::vector<Dev> d;
   Stats st;
   Metrics mx;                    // Host counters for metrics(). Same block steps as st.
+  RankProfile pf;                // Phase times and bytes (MPI-M3). profile() copies them.
   double init_force_s = 0, init_levels_s = 0;  // Start-up times. metrics() copies them. reset does not clear them.
   // The particle set has P parts [base, base + n). One process: one part for each device, P = devices.size().
   // MPI (several ranks): one part for each rank, P = ranks(). Then d holds one device, the GPU of this rank.
@@ -526,19 +527,40 @@ struct Simulation::Impl {
     const auto t2 = Clock::now();
     init_force_s = std::chrono::duration<double>(t1 - t0).count();
     init_levels_s = std::chrono::duration<double>(t2 - t1).count();
+    // Init step() filled pf. Keep only the one-shot start-up times for profile().
+    const double setup = pf.t_setup;
+    pf = RankProfile{};
+    pf.t_setup = setup;
+    pf.t_init_force = init_force_s;
   }
 
-  // One block step. See "How a block step works" in the plan.
-  // ponytail: two host syncs per block step (about 10 to 30 us). This matters only when NA is very small. Upgrade: CUDA graphs or device-side scheduling (O4).
+  // Launch correct_kernel for one active set. Dissipation::Off has no extra arithmetic.
+  void launch_correct(Dev& e, int m, const StepParams& prm, int part) {
+    const int center = (c.fixed_center && part == 0) ? 0 : -1, nodrag = part == 0 ? 0 : -1;
+    if (c.dissipation == Dissipation::LinearDrag)
+      correct_kernel<Dissipation::LinearDrag><<<blocks(m, 256), 256, 0, e.s>>>(
+          m, e.act, e.ca, e.cj, prm, center, nodrag, e.vp, e.x, e.v, e.a, e.j, e.t, e.next, e.level, e.status,
+          e.minr2, e.wd);
+    else
+      correct_kernel<Dissipation::Off><<<blocks(m, 256), 256, 0, e.s>>>(
+          m, e.act, e.ca, e.cj, prm, center, nodrag, e.vp, e.x, e.v, e.a, e.j, e.t, e.next, e.level, e.status,
+          e.minr2, e.wd);
+    check_launch(debug_sync, e.s, "correct_kernel");
+  }
+
+  // One block step (T031). Single process: peer copies between devices, sums in device order.
+  // MPI (several ranks): the same phases with collectives; each rank owns one part; sums in rank order.
+  // No floating-point value is added by MPI. One process with devices={0,1} and two ranks can give the same bits.
+  // ponytail: two host syncs (one process) or three syncs and five collectives (MPI) per block step. Upgrade: O4.
+  // Host clocks (MPI-M3) sit only at the existing sync points. They do not add a sync or a collective.
   void step(bool init) {
-#ifdef H4NB_HAVE_MPI
-    if (mpi) {
-      step_mpi(init);
-      return;
-    }
-#endif
-    const int G = int(d.size());
+    using clock = std::chrono::steady_clock;
+    const auto sec = [](clock::time_point a, clock::time_point b) {
+      return std::chrono::duration<double>(b - a).count();
+    };
+    const int G = int(d.size());  // Local devices. Under MPI, G is 1.
     int64_t Tn = 0;
+    const auto t_tn0 = clock::now();
     if (!init) {
       for (auto& e : d) {
         use(e);
@@ -546,20 +568,37 @@ struct Simulation::Impl {
         H4_CUDA(cudaMemcpyAsync(e.h_min, e.dmin, sizeof(int64_t), cudaMemcpyDeviceToHost, e.s));
         H4_CUDA(cudaMemcpyAsync(e.h_status, e.status, sizeof(unsigned), cudaMemcpyDeviceToHost, e.s));
       }
-      Tn = INT64_MAX;
-      unsigned flags = 0;
       for (auto& e : d) {
         use(e);
         H4_CUDA(cudaStreamSynchronize(e.s));
-        Tn = std::min(Tn, *e.h_min);
-        flags |= *e.h_status;
       }
-      // A9 (MPI-M6): stop at this block step when a device has set kNaN. The MPI path does the same.
-      if (flags & kNaN) {
-        halted = true;
-        return;
+#ifdef H4NB_HAVE_MPI
+      if (mpi) {
+        // Phase 1 also carries the error flag (T034): v[1] is 0 on a rank with kNaN. MIN gives 0 on all ranks.
+        int64_t v[2] = {*d[0].h_min, (*d[0].h_status & kNaN) ? 0 : 1};
+        comm::min_i64(v, 2);
+        if (v[1] == 0) {
+          halted = true;
+          return;
+        }
+        Tn = v[0];
+      } else
+#endif
+      {
+        Tn = INT64_MAX;
+        unsigned flags = 0;
+        for (auto& e : d) {
+          Tn = std::min(Tn, *e.h_min);
+          flags |= *e.h_status;
+        }
+        // A9 (MPI-M6): stop at this block step when a device has set kNaN.
+        if (flags & kNaN) {
+          halted = true;
+          return;
+        }
       }
     }
+    const auto t_tn1 = clock::now();
     for (auto& e : d) {
       use(e);
       predict_kernel<<<blocks(e.n, 256), 256, 0, e.s>>>(e.n, e.x, e.v, e.a, e.j, e.t, Tn, tick, e.xp, e.vp);
@@ -569,72 +608,169 @@ struct Simulation::Impl {
                                     IsActive{e.next, Tn}, e.s));
       H4_CUDA(cudaMemcpyAsync(e.h_nsel, e.nsel, sizeof(int), cudaMemcpyDeviceToHost, e.s));
     }
-    std::vector<int> off(G), na(G);  // Use (G). Do not use (size_t(G)): it parses as a function declaration.
+    for (auto& e : d) {
+      use(e);
+      H4_CUDA(cudaStreamSynchronize(e.s));
+    }
+    const auto t_sel1 = clock::now();
+
+    std::vector<int> na(P), off(P);  // Use (P). Do not use (size_t(P)): most vexing parse.
     int NA = 0;
-    for (int g = 0; g < G; ++g) {
-      use(d[size_t(g)]);
-      H4_CUDA(cudaStreamSynchronize(d[size_t(g)].s));
-      na[size_t(g)] = *d[size_t(g)].h_nsel;
-      off[size_t(g)] = NA;
-      NA += na[size_t(g)];
+#ifdef H4NB_HAVE_MPI
+    if (mpi) {
+      comm::allgather_int(*d[0].h_nsel, na.data());
+      for (int h = 0; h < P; ++h) off[size_t(h)] = NA, NA += na[size_t(h)];
+    } else
+#endif
+    {
+      for (int g = 0; g < G; ++g) {
+        na[size_t(g)] = *d[size_t(g)].h_nsel;
+        off[size_t(g)] = NA;
+        NA += na[size_t(g)];
+      }
     }
     mx.active_hist[log2_bin(uint64_t(NA))]++;
-    // All-gather of the active targets.
-    for (int g = 0; g < G; ++g) {
-      Dev& e = d[size_t(g)];
-      const int o = off[size_t(g)], m = na[size_t(g)];
+    const int nab = log2_bin(uint64_t(NA));
+    pf.na_hist[nab < 32 ? nab : 31]++;
+
+#ifdef H4NB_HAVE_MPI
+    if (mpi) {
+      // MPI exchange (docs/multi-node-design.md §1.1). Without mpi_host_staging, MPI gets device pointers.
+      Dev& e = d[0];
+      const int r = part0;
+      const bool stage = c.mpi_host_staging;
+      const int m = na[size_t(r)], o = off[size_t(r)];
       use(e);
       if (m) gather_kernel<<<blocks(m, 256), 256, 0, e.s>>>(m, e.act, e.xp, e.vp, e.base, e.tx + o, e.tv + o, e.tid + o);
       check_launch(debug_sync, e.s, "gather_kernel");
-      for (int h = 0; h < G; ++h) {
-        if (h == g) continue;
-        copy(d[size_t(h)].tx + o, e.tx + o, size_t(m) * sizeof(d4), e.s);
-        copy(d[size_t(h)].tv + o, e.tv + o, size_t(m) * sizeof(d4), e.s);
-        copy(d[size_t(h)].tid + o, e.tid + o, size_t(m) * sizeof(int), e.s);
+      if (stage) {
+        copy(e.h_tx + o, e.tx + o, size_t(m) * sizeof(d4), e.s);
+        copy(e.h_tv + o, e.tv + o, size_t(m) * sizeof(d4), e.s);
+        copy(e.h_tid + o, e.tid + o, size_t(m) * sizeof(int), e.s);
+        pf.bytes_d2h += int64_t(m) * (2 * int64_t(sizeof(d4)) + int64_t(sizeof(int)));
       }
-      H4_CUDA(cudaEventRecord(e.ev_tx, e.s));
-    }
-    // Each device computes the partial forces of its sources on all targets. Then the slices go to their owners.
-    for (int h = 0; h < G; ++h) {
-      Dev& e = d[size_t(h)];
-      use(e);
-      for (int g = 0; g < G; ++g)
-        if (g != h) H4_CUDA(cudaStreamWaitEvent(e.s, d[size_t(g)].ev_tx, 0));
+      H4_CUDA(cudaStreamSynchronize(e.s));
+      H4_CUDA(cudaGetLastError());
+      comm::allgatherv_d4(stage ? (void*)e.h_tx : (void*)e.tx, na.data(), off.data());
+      comm::allgatherv_d4(stage ? (void*)e.h_tv : (void*)e.tv, na.data(), off.data());
+      comm::allgatherv_int(stage ? e.h_tid : e.tid, na.data(), off.data());
+      if (stage) {
+        copy(e.tx, e.h_tx, size_t(NA) * sizeof(d4), e.s);
+        copy(e.tv, e.h_tv, size_t(NA) * sizeof(d4), e.s);
+        copy(e.tid, e.h_tid, size_t(NA) * sizeof(int), e.s);
+        pf.bytes_h2d += int64_t(NA) * (2 * int64_t(sizeof(d4)) + int64_t(sizeof(int)));
+      }
+      const auto t_g1 = clock::now();
+      // Bytes per step (MPI-M3): Allreduce 16, counts 4P, Allgatherv 68 B/active, Alltoallv 64 B/active.
+      pf.bytes_sent += 16 + 4 * P + 68LL * m * (P - 1) + 64LL * (NA - m);
+      pf.bytes_recv += 16 + 4 * P + 68LL * (NA - m) + 64LL * (P - 1) * m;
       const Split sp = split(NA, e.n, e.sms, c.blocks_per_sm, c.tile);
       launch_force(c.tile, dim3(unsigned(blocks(NA, c.tile)), unsigned(sp.nj)), e.s, NA, e.tx, e.tv, e.tid, e.n, e.xp,
                    e.vp, e.base, sp.chunk, c.eps2, e.pa, e.pj);
       check_launch(debug_sync, e.s, "force_kernel");
       sum_partials<<<blocks(NA, 256), 256, 0, e.s>>>(NA, sp.nj, e.pa, e.pj, e.fa, e.fj);
       check_launch(debug_sync, e.s, "sum_partials");
-      for (int g = 0; g < G; ++g) {
-        const size_t m = size_t(na[size_t(g)]), row = size_t(h) * m;
-        copy(d[size_t(g)].ra + row, e.fa + off[size_t(g)], m * sizeof(d4), e.s);
-        copy(d[size_t(g)].rj + row, e.fj + off[size_t(g)], m * sizeof(d4), e.s);
+      if (stage) {
+        copy(e.h_fa, e.fa, size_t(NA) * sizeof(d4), e.s);
+        copy(e.h_fj, e.fj, size_t(NA) * sizeof(d4), e.s);
+        pf.bytes_d2h += 2LL * int64_t(NA) * int64_t(sizeof(d4));
       }
-      H4_CUDA(cudaEventRecord(e.ev_f, e.s));
-    }
-    // Each owner adds the rows in device order. Then it corrects its particles.
-    const StepParams sp = make_params(c, tick, Tn, init);
-    for (int g = 0; g < G; ++g) {
-      Dev& e = d[size_t(g)];
-      const int m = na[size_t(g)];
-      use(e);
-      for (int h = 0; h < G; ++h)
-        if (h != g) H4_CUDA(cudaStreamWaitEvent(e.s, d[size_t(h)].ev_f, 0));
-      if (!m) continue;
-      sum_partials<<<blocks(m, 256), 256, 0, e.s>>>(m, G, e.ra, e.rj, e.ca, e.cj);
-      check_launch(debug_sync, e.s, "sum_partials");
-      const int center = (c.fixed_center && g == 0) ? 0 : -1, nodrag = g == 0 ? 0 : -1;
-      // Select the dissipation model one time for each launch. The Off instance has no extra arithmetic.
-      if (c.dissipation == Dissipation::LinearDrag)
-        correct_kernel<Dissipation::LinearDrag><<<blocks(m, 256), 256, 0, e.s>>>(
-            m, e.act, e.ca, e.cj, sp, center, nodrag, e.vp, e.x, e.v, e.a, e.j, e.t, e.next, e.level, e.status,
-            e.minr2, e.wd);
-      else
-        correct_kernel<Dissipation::Off><<<blocks(m, 256), 256, 0, e.s>>>(
-            m, e.act, e.ca, e.cj, sp, center, nodrag, e.vp, e.x, e.v, e.a, e.j, e.t, e.next, e.level, e.status,
-            e.minr2, e.wd);
-      check_launch(debug_sync, e.s, "correct_kernel");
+      H4_CUDA(cudaStreamSynchronize(e.s));
+      H4_CUDA(cudaGetLastError());
+      const auto t_f1 = clock::now();
+      std::vector<int> rc(P), rd(P);
+      for (int h = 0; h < P; ++h) rc[size_t(h)] = m, rd[size_t(h)] = h * m;  // Row h comes from rank h.
+      comm::alltoallv_d4(stage ? (void*)e.h_fa : (void*)e.fa, na.data(), off.data(), stage ? (void*)e.h_ra : (void*)e.ra,
+                         rc.data(), rd.data());
+      comm::alltoallv_d4(stage ? (void*)e.h_fj : (void*)e.fj, na.data(), off.data(), stage ? (void*)e.h_rj : (void*)e.rj,
+                         rc.data(), rd.data());
+      const auto t_x1 = clock::now();
+      if (m) {
+        if (stage) {
+          copy(e.ra, e.h_ra, size_t(P) * size_t(m) * sizeof(d4), e.s);
+          copy(e.rj, e.h_rj, size_t(P) * size_t(m) * sizeof(d4), e.s);
+          pf.bytes_h2d += 2LL * int64_t(P) * int64_t(m) * int64_t(sizeof(d4));
+        }
+        const StepParams prm = make_params(c, tick, Tn, init);
+        sum_partials<<<blocks(m, 256), 256, 0, e.s>>>(m, P, e.ra, e.rj, e.ca, e.cj);
+        check_launch(debug_sync, e.s, "sum_partials");
+        launch_correct(e, m, prm, r);
+      }
+      const auto t_c1 = clock::now();
+      pf.t_tn += init ? 0.0 : sec(t_tn0, t_tn1);
+      pf.t_select += sec(t_tn1, t_sel1);
+      pf.t_gather += sec(t_sel1, t_g1);  // Local gather + Allgatherv (+ staging copies).
+      pf.t_force += sec(t_g1, t_f1);
+      pf.t_xchg += sec(t_f1, t_x1);
+      pf.t_correct += sec(t_x1, t_c1);
+      pf.own_active_total += m;
+      if (m > pf.own_active_max) pf.own_active_max = m;
+    } else
+#endif
+    {
+      // Peer-copy exchange between local devices. Parts are the devices; order is device order.
+      const auto t_g0 = clock::now();
+      for (int g = 0; g < G; ++g) {
+        Dev& e = d[size_t(g)];
+        const int o = off[size_t(g)], m = na[size_t(g)];
+        use(e);
+        if (m) gather_kernel<<<blocks(m, 256), 256, 0, e.s>>>(m, e.act, e.xp, e.vp, e.base, e.tx + o, e.tv + o, e.tid + o);
+        check_launch(debug_sync, e.s, "gather_kernel");
+        for (int h = 0; h < G; ++h) {
+          if (h == g) continue;
+          copy(d[size_t(h)].tx + o, e.tx + o, size_t(m) * sizeof(d4), e.s);
+          copy(d[size_t(h)].tv + o, e.tv + o, size_t(m) * sizeof(d4), e.s);
+          copy(d[size_t(h)].tid + o, e.tid + o, size_t(m) * sizeof(int), e.s);
+        }
+        pf.bytes_sent += int64_t(G - 1) * int64_t(m) * (2 * int64_t(sizeof(d4)) + int64_t(sizeof(int)));
+        H4_CUDA(cudaEventRecord(e.ev_tx, e.s));
+      }
+      const auto t_g1 = clock::now();
+      for (int h = 0; h < G; ++h) {
+        Dev& e = d[size_t(h)];
+        use(e);
+        for (int g = 0; g < G; ++g)
+          if (g != h) H4_CUDA(cudaStreamWaitEvent(e.s, d[size_t(g)].ev_tx, 0));
+        const Split sp = split(NA, e.n, e.sms, c.blocks_per_sm, c.tile);
+        launch_force(c.tile, dim3(unsigned(blocks(NA, c.tile)), unsigned(sp.nj)), e.s, NA, e.tx, e.tv, e.tid, e.n, e.xp,
+                     e.vp, e.base, sp.chunk, c.eps2, e.pa, e.pj);
+        check_launch(debug_sync, e.s, "force_kernel");
+        sum_partials<<<blocks(NA, 256), 256, 0, e.s>>>(NA, sp.nj, e.pa, e.pj, e.fa, e.fj);
+        check_launch(debug_sync, e.s, "sum_partials");
+        for (int g = 0; g < G; ++g) {
+          const size_t m = size_t(na[size_t(g)]), row = size_t(h) * m;
+          copy(d[size_t(g)].ra + row, e.fa + off[size_t(g)], m * sizeof(d4), e.s);
+          copy(d[size_t(g)].rj + row, e.fj + off[size_t(g)], m * sizeof(d4), e.s);
+        }
+        H4_CUDA(cudaEventRecord(e.ev_f, e.s));
+      }
+      const auto t_f1 = clock::now();
+      const StepParams prm = make_params(c, tick, Tn, init);
+      for (int g = 0; g < G; ++g) {
+        Dev& e = d[size_t(g)];
+        const int m = na[size_t(g)];
+        use(e);
+        for (int h = 0; h < G; ++h)
+          if (h != g) H4_CUDA(cudaStreamWaitEvent(e.s, d[size_t(h)].ev_f, 0));
+        if (!m) continue;
+        sum_partials<<<blocks(m, 256), 256, 0, e.s>>>(m, G, e.ra, e.rj, e.ca, e.cj);
+        check_launch(debug_sync, e.s, "sum_partials");
+        launch_correct(e, m, prm, g);
+      }
+      const auto t_c1 = clock::now();
+      // Peer path: force-result copies sit between force and correct; count them as t_xchg.
+      pf.t_tn += init ? 0.0 : sec(t_tn0, t_tn1);
+      pf.t_select += sec(t_tn1, t_sel1);
+      pf.t_gather += sec(t_g0, t_g1);
+      // Peer copies of forces sit in the force loop; they are in t_force (no separate sync).
+      pf.t_force += sec(t_g1, t_f1);
+      pf.t_correct += sec(t_f1, t_c1);
+      const int64_t active_bytes = 2 * int64_t(sizeof(d4)) + int64_t(sizeof(int));
+      pf.bytes_recv += int64_t(G - 1) * int64_t(NA) * active_bytes;
+      int own = 0;
+      for (int g = 0; g < G; ++g) own += na[size_t(g)];
+      pf.own_active_total += own;
+      if (own > pf.own_active_max) pf.own_active_max = own;
     }
     H4_CUDA(cudaGetLastError());
     T = Tn;
@@ -643,120 +779,11 @@ struct Simulation::Impl {
     ++mx.block_steps;
     mx.active_total += NA;
     mx.step_level_hist[detail::block_level(c.max_level, Tn)]++;
+    ++pf.steps;
+    pf.na_total += NA;
   }
 
 #ifdef H4NB_HAVE_MPI
-  // One block step on several ranks (task T031, docs/multi-node-design.md section 1.1). Each rank has one device
-  // and owns the part [base, base + n). The four collective phases replace the peer copies of step():
-  //   1. MPI_Allreduce (MIN) of {Tn, no-NaN flag}. Both values are integers, so the result does not depend on the order.
-  //   2. MPI_Allgather of the active counts, then MPI_Allgatherv of the active targets. Block r goes to the offset
-  //      off[r], the sum of the counts of the ranks before r. So the target list is in rank order, as in step().
-  //   3. Each rank computes the force of its sources on all NA targets. MPI_Alltoallv sends the slice of each
-  //      owner. Row h of ra and rj on the owner comes from rank h.
-  //   4. sum_partials adds the rows 0, 1, ..., P-1 in this order. Then correct_kernel runs.
-  // No floating-point value is added by MPI. The sums are those of step() with the rank in place of the device.
-  // Thus one process with devices={0,1} and two ranks can give the same bits (same split, same device model).
-  // Without Config::mpi_host_staging, MPI gets device pointers (CUDA-aware MPI). The stream is synchronized first.
-  // ponytail: three host syncs and five collectives for each block step. Upgrade: gated O4 (CUDA graphs) after a
-  // measurement on the cluster.
-  void step_mpi(bool init) {
-    Dev& e = d[0];
-    const int r = part0;
-    const bool stage = c.mpi_host_staging;
-    use(e);
-    int64_t Tn = 0;
-    if (!init) {
-      H4_CUDA(cub::DeviceReduce::Min(e.tmp, e.tmp_bytes, e.next, e.dmin, e.n, e.s));
-      H4_CUDA(cudaMemcpyAsync(e.h_min, e.dmin, sizeof(int64_t), cudaMemcpyDeviceToHost, e.s));
-      H4_CUDA(cudaMemcpyAsync(e.h_status, e.status, sizeof(unsigned), cudaMemcpyDeviceToHost, e.s));
-      H4_CUDA(cudaStreamSynchronize(e.s));
-      // Phase 1 also carries the error flag (task T034): v[1] is 0 on a rank with kNaN. MIN gives 0 on all ranks.
-      int64_t v[2] = {*e.h_min, (*e.h_status & kNaN) ? 0 : 1};
-      comm::min_i64(v, 2);
-      if (v[1] == 0) {  // All ranks see the same value. All ranks stop at the same block step.
-        halted = true;
-        return;
-      }
-      Tn = v[0];
-    }
-    predict_kernel<<<blocks(e.n, 256), 256, 0, e.s>>>(e.n, e.x, e.v, e.a, e.j, e.t, Tn, tick, e.xp, e.vp);
-    check_launch(debug_sync, e.s, "predict_kernel");
-    size_t bytes = e.tmp_bytes;
-    H4_CUDA(cub::DeviceSelect::If(e.tmp, bytes, thrust::counting_iterator<int>(0), e.act, e.nsel, e.n,
-                                  IsActive{e.next, Tn}, e.s));
-    H4_CUDA(cudaMemcpyAsync(e.h_nsel, e.nsel, sizeof(int), cudaMemcpyDeviceToHost, e.s));
-    H4_CUDA(cudaStreamSynchronize(e.s));
-    // Phase 2: the counts, then the targets in rank order.
-    std::vector<int> na(P), off(P), rc(P), rd(P);  // Use (P). Do not use (size_t(P)): see step().
-    comm::allgather_int(*e.h_nsel, na.data());
-    int NA = 0;
-    for (int h = 0; h < P; ++h) off[size_t(h)] = NA, NA += na[size_t(h)];
-    mx.active_hist[log2_bin(uint64_t(NA))]++;
-    const int m = na[size_t(r)], o = off[size_t(r)];
-    if (m) gather_kernel<<<blocks(m, 256), 256, 0, e.s>>>(m, e.act, e.xp, e.vp, e.base, e.tx + o, e.tv + o, e.tid + o);
-    check_launch(debug_sync, e.s, "gather_kernel");
-    if (stage) {
-      copy(e.h_tx + o, e.tx + o, size_t(m) * sizeof(d4), e.s);
-      copy(e.h_tv + o, e.tv + o, size_t(m) * sizeof(d4), e.s);
-      copy(e.h_tid + o, e.tid + o, size_t(m) * sizeof(int), e.s);
-    }
-    H4_CUDA(cudaStreamSynchronize(e.s));
-    H4_CUDA(cudaGetLastError());
-    comm::allgatherv_d4(stage ? (void*)e.h_tx : (void*)e.tx, na.data(), off.data());
-    comm::allgatherv_d4(stage ? (void*)e.h_tv : (void*)e.tv, na.data(), off.data());
-    comm::allgatherv_int(stage ? e.h_tid : e.tid, na.data(), off.data());
-    if (stage) {
-      copy(e.tx, e.h_tx, size_t(NA) * sizeof(d4), e.s);
-      copy(e.tv, e.h_tv, size_t(NA) * sizeof(d4), e.s);
-      copy(e.tid, e.h_tid, size_t(NA) * sizeof(int), e.s);
-    }
-    // Phase 3: the force of the own sources on all targets, then the slice of each owner.
-    const Split sp = split(NA, e.n, e.sms, c.blocks_per_sm, c.tile);
-    launch_force(c.tile, dim3(unsigned(blocks(NA, c.tile)), unsigned(sp.nj)), e.s, NA, e.tx, e.tv, e.tid, e.n, e.xp,
-                 e.vp, e.base, sp.chunk, c.eps2, e.pa, e.pj);
-    check_launch(debug_sync, e.s, "force_kernel");
-    sum_partials<<<blocks(NA, 256), 256, 0, e.s>>>(NA, sp.nj, e.pa, e.pj, e.fa, e.fj);
-    check_launch(debug_sync, e.s, "sum_partials");
-    if (stage) {
-      copy(e.h_fa, e.fa, size_t(NA) * sizeof(d4), e.s);
-      copy(e.h_fj, e.fj, size_t(NA) * sizeof(d4), e.s);
-    }
-    H4_CUDA(cudaStreamSynchronize(e.s));
-    H4_CUDA(cudaGetLastError());
-    for (int h = 0; h < P; ++h) rc[size_t(h)] = m, rd[size_t(h)] = h * m;  // Row h comes from rank h.
-    comm::alltoallv_d4(stage ? (void*)e.h_fa : (void*)e.fa, na.data(), off.data(), stage ? (void*)e.h_ra : (void*)e.ra,
-                       rc.data(), rd.data());
-    comm::alltoallv_d4(stage ? (void*)e.h_fj : (void*)e.fj, na.data(), off.data(), stage ? (void*)e.h_rj : (void*)e.rj,
-                       rc.data(), rd.data());
-    // Phase 4: the owner adds the rows in rank order. Then it corrects its particles.
-    if (m) {
-      if (stage) {
-        copy(e.ra, e.h_ra, size_t(P) * size_t(m) * sizeof(d4), e.s);
-        copy(e.rj, e.h_rj, size_t(P) * size_t(m) * sizeof(d4), e.s);
-      }
-      const StepParams prm = make_params(c, tick, Tn, init);
-      sum_partials<<<blocks(m, 256), 256, 0, e.s>>>(m, P, e.ra, e.rj, e.ca, e.cj);
-      check_launch(debug_sync, e.s, "sum_partials");
-      const int center = (c.fixed_center && r == 0) ? 0 : -1, nodrag = r == 0 ? 0 : -1;
-      if (c.dissipation == Dissipation::LinearDrag)
-        correct_kernel<Dissipation::LinearDrag><<<blocks(m, 256), 256, 0, e.s>>>(
-            m, e.act, e.ca, e.cj, prm, center, nodrag, e.vp, e.x, e.v, e.a, e.j, e.t, e.next, e.level, e.status,
-            e.minr2, e.wd);
-      else
-        correct_kernel<Dissipation::Off><<<blocks(m, 256), 256, 0, e.s>>>(
-            m, e.act, e.ca, e.cj, prm, center, nodrag, e.vp, e.x, e.v, e.a, e.j, e.t, e.next, e.level, e.status,
-            e.minr2, e.wd);
-      check_launch(debug_sync, e.s, "correct_kernel");
-    }
-    H4_CUDA(cudaGetLastError());
-    T = Tn;
-    ++st.block_steps;
-    st.active_total += NA;
-    ++mx.block_steps;
-    mx.active_total += NA;
-    mx.step_level_hist[detail::block_level(c.max_level, Tn)]++;
-  }
-
   Particles state_mpi();          // Below. Collective.
   Diagnostics diagnostics_mpi();  // Below. Collective.
 #endif
@@ -795,6 +822,19 @@ Metrics Simulation::metrics(bool reset) {
   out.init_force_s = m.init_force_s;
   out.init_levels_s = m.init_levels_s;
   if (reset) m.mx = Metrics{};
+  return out;
+}
+
+RankProfile Simulation::profile(bool reset) {
+  Impl& m = *impl_;
+  RankProfile out = m.pf;
+  out.t_init_force = m.init_force_s;
+  if (reset) {
+    const double setup = m.pf.t_setup, initf = m.pf.t_init_force;
+    m.pf = RankProfile{};
+    m.pf.t_setup = setup;
+    m.pf.t_init_force = initf;
+  }
   return out;
 }
 

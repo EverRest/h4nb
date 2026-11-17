@@ -14,6 +14,7 @@
 #include <stdexcept>
 #include <string>
 #include <vector>
+#include "device_info.hpp"
 #include "h4nb/h4nb.hpp"
 #include "mpi_comm.hpp"
 
@@ -240,8 +241,7 @@ std::string rank_table(int device_offset) {
     const cudaError_t e = cudaGetDeviceProperties(&prop, id);
     line += " device=" + std::to_string(id);
     if (e == cudaSuccess)
-      line += std::string(" name=") + prop.name + " cc=" + std::to_string(prop.major) + "." + std::to_string(prop.minor) +
-              " sm_count=" + std::to_string(prop.multiProcessorCount);
+      line += device_info::prop_fields(prop);  // O9 / MPI-M4: uuid, pci, mem, clock with name/cc/sm_count.
     else
       line += std::string(" error=") + cudaGetErrorString(e);
   } catch (const std::exception& ex) {

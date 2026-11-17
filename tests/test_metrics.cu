@@ -22,6 +22,12 @@ int main() {
   const Metrics m{};
   CHECK(m.init_force_s == 0);
   CHECK(m.init_levels_s == 0);
+  // RankProfile defaults (MPI-M3). Host-only fields; no GPU.
+  const RankProfile p{};
+  CHECK(p.steps == 0);
+  CHECK(p.t_force == 0);
+  CHECK(p.bytes_sent == 0);
+  CHECK(p.na_hist[0] == 0);
   std::printf("test_metrics: ok\n");
   return 0;
 }

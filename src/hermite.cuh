@@ -156,12 +156,14 @@ H4_HD void add_drag_sc(double tau, const d4& j, d4& s, d4& c) {
   c = d4{c.x - s.x / tau, c.y - s.y / tau, c.z - s.z / tau, 0.0};
 }
 
-// First block level from the Aarseth estimate at t = 0 (cold start, issue A1), with eta_init. s and c are the snap
-// and crackle with G and drag. If a, j, s and c are all 0 (no force), the level is the coarsest one with no status bit.
-// An estimate that is not finite or not positive gives the coarsest level and sets kInitStepInvalid.
+// First block level from the Aarseth estimate at t = 0 (cold start, issues A1 and A5), with eta_init. s and c are the
+// snap and crackle with G and drag. If a = j = 0 (no force and no jerk), the level is the coarsest one with no status
+// bit. That covers a dead particle (A1) and a body at the centre of a symmetric start, where snap can be nonzero and
+// the Aarseth estimate is 0 (A5). An estimate that is not finite or not positive otherwise gives the coarsest level
+// and sets kInitStepInvalid.
 H4_HD int init_level(const StepParams& p, const d4& a, const d4& j, const d4& s, const d4& c, unsigned& st) {
   if (p.fixed_level >= 0) return p.fixed_level;
-  if (norm3(a) == 0 && norm3(j) == 0 && norm3(s) == 0 && norm3(c) == 0) return 0;
+  if (norm3(a) == 0 && norm3(j) == 0) return 0;
   const double dt = aarseth_dt(norm3(a), norm3(j), norm3(s), norm3(c), p.eta_init);
   if (!(dt > 0) || h4_nonfinite(dt)) {
     st |= kInitStepInvalid;

@@ -7,7 +7,8 @@ The header at commit `339ce35` is the base contract. This file lists the rules a
 - `Simulation(const Particles&, const Config&)` uploads the data, computes a and j, and selects the first steps. It throws `std::invalid_argument` for bad input and `std::runtime_error` for a CUDA error.
 - `advance_to(double t)`: `t` is a multiple of `dt_max` and not less than `time()`. On return, all particles are synchronized at `t`.
 - `diagnostics()` works only at sync points. It costs N²/2 pair evaluations.
-- `state()`, `levels()`, `status()`, `stats()`, `time()`.
+- `state()`, `levels()`, `status()`, `stats()`, `metrics()`, `profile()`, `time()`.
+- `profile(reset)` returns local `RankProfile` phase times and byte counts (MPI-M3). It does not sync and does not run a collective. `reset` clears the step counters; it keeps `t_setup` and `t_init_force`.
 - `load_text`, `write_snapshot`, `read_snapshot`.
 
 ## Planned additions
@@ -57,7 +58,7 @@ Functions:
 | `RankScope(int& argc, char**& argv)` | Initializes MPI when the build has MPI and MPI is not initialized. |
 | `int rank()`, `int ranks()`, `int local_rank()` | This rank, the rank count, and the rank on the node. 0, 1 and 0 for one rank. |
 | `int max_over_ranks(int)` | Collective. The largest value of all ranks, on every rank. The tools use it to agree on an error code. |
-| `std::string rank_table(int device_offset)` | Collective. Rank 0 gets `mpi_library: ...` and one line `rank_<r>: host=... local_rank=... device=... name=... cc=...` for each rank. The other ranks get `""`. One rank: `""`. |
+| `std::string rank_table(int device_offset)` | Collective. Rank 0 gets `mpi_library: ...` and one line `rank_<r>: host=... local_rank=... device=... name=... cc=... sm_count=... uuid=... pci=... mem_bytes=... clock_khz=...` for each rank. The other ranks get `""`. One rank: `""`. |
 | `[[noreturn]] void abort_ranks(int code, const std::string&)` | Flushes all C output streams, prints the message with the rank, and calls `MPI_Abort`. Without MPI it calls `std::exit(code)`. |
 
 Errors under MPI (task T034, "hybrid", Pavlo, 2026-11-07):

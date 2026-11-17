@@ -79,6 +79,33 @@ struct Metrics {
   double init_levels_s = 0;
 };
 
+// Local per-rank phase times and traffic (issue MPI-M3). Host clocks at the existing sync points only.
+// Timing does not change control flow. profile(true) clears the counters after the copy.
+// t_setup and t_init_force are set once by the constructor; profile(true) does not clear them.
+// gpu_force_ms stays 0 until profile=2 (cudaEvent) is added.
+struct RankProfile {
+  int64_t steps = 0;
+  int64_t na_total = 0;             // Sum of global NA over block steps on this rank.
+  int64_t own_active_total = 0;     // Sum of this rank's (or all local devices') active counts.
+  int own_active_max = 0;
+  uint64_t na_hist[32] = {};        // na_hist[log2_bin(NA)], capped at bin 31.
+  int64_t bytes_sent = 0;
+  int64_t bytes_recv = 0;
+  int64_t bytes_h2d = 0;
+  int64_t bytes_d2h = 0;
+  double t_tn = 0;       // Find next block time (min next + sync / Allreduce).
+  double t_select = 0;   // Predict + DeviceSelect + sync.
+  double t_gather = 0;   // Gather actives + Allgatherv / peer copies of (x,v,id).
+  double t_force = 0;    // Force + partial sum.
+  double t_xchg = 0;     // Alltoallv / peer copies of forces.
+  double t_correct = 0;  // Owner sum + corrector.
+  double t_diag = 0;     // Filled by the tool around diagnostics(), not by step().
+  double t_state = 0;    // Filled by the tool around state(), not by step().
+  double t_setup = 0;    // Constructor wall before the first force (set once).
+  double t_init_force = 0;  // Same as Metrics::init_force_s (set once).
+  double gpu_force_ms = 0;
+};
+
 // floor(log2(n)). It gives 0 for n = 0 and for n = 1.
 inline int log2_bin(uint64_t n) {
   int b = 0;
@@ -112,6 +139,7 @@ class Simulation {
   unsigned status() const;          // StatusBits
   Stats stats() const;
   Metrics metrics(bool reset = false);  // Host counters. reset = true sets them to 0 after the copy.
+  RankProfile profile(bool reset = false);  // Phase times and bytes (MPI-M3). reset clears step counters only.
 
  private:
   struct Impl;

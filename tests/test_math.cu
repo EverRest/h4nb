@@ -86,9 +86,12 @@ static void test_update_particle() {
   // Zero snap and crackle: the estimate is infinite. Level 0 and kInitStepInvalid.
   unsigned si = 0;
   CHECK(init_level(p, a1, j1, z, z, si) == 0 && si == kInitStepInvalid);
-  // No force at all (a = j = s = c = 0, e.g. G = 0 without drag): level 0 and no status bit.
+  // No force and no jerk (a = j = 0, e.g. G = 0 without drag): level 0 and no status bit.
   unsigned sz = 0;
   CHECK(init_level(p, z, z, z, z, sz) == 0 && sz == 0);
+  // Symmetric centre (issue A5): a = j = 0 but snap nonzero → Aarseth dt = 0. Level 0, no kDtUnderflow.
+  unsigned sa5 = 0;
+  CHECK(init_level(p, z, z, d4{1, 0, 0, 0}, z, sa5) == 0 && sa5 == 0);
 
   // Centre body: zero force, level 0 in adaptive mode.
   unsigned sc = update_particle(p, true, a1, j1, 4.0, x, v, a, j, t, next, lv);
