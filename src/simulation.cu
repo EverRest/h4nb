@@ -32,7 +32,17 @@ void ck(cudaError_t e, const char* what) {
   if (e == cudaSuccess) return;
   int dev = -1;
   (void)cudaGetDevice(&dev);
-  throw std::runtime_error(std::string(what) + ": " + cudaGetErrorString(e) + " (device " + std::to_string(dev) + ")");
+  std::string msg = std::string(what) + ": " + cudaGetErrorString(e) + " (device " + std::to_string(dev) + ")";
+  // These errors usually mean that the driver is older than the CUDA runtime, or that the binary has no code for this GPU.
+  if (e == cudaErrorInvalidDeviceFunction || e == cudaErrorNoKernelImageForDevice || e == cudaErrorUnsupportedPtxVersion) {
+    int drv = 0, rt = 0;
+    (void)cudaDriverGetVersion(&drv);
+    (void)cudaRuntimeGetVersion(&rt);
+    msg += ". CUDA driver " + std::to_string(drv / 1000) + "." + std::to_string(drv % 1000 / 10) + ", CUDA runtime " +
+           std::to_string(rt / 1000) + "." + std::to_string(rt % 1000 / 10) +
+           ". Update the driver, or build with CMAKE_CUDA_ARCHITECTURES for this GPU.";
+  }
+  throw std::runtime_error(msg);
 }
 #define H4_CUDA(call) ck((call), #call)
 

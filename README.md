@@ -96,6 +96,8 @@ About 220 bytes of owned state per particle and about 200 bytes of work buffers 
 
 You need Linux (x86_64 or aarch64), CUDA 12.0 or newer, CMake 3.24 or newer and an NVIDIA GPU with compute capability 7.0 or higher.
 
+The driver must support the CUDA version of the toolkit. The "CUDA Version" in `nvidia-smi` must be equal to or higher than the `nvcc` version (example: CUDA 12.6 needs driver 560 or newer). An older driver gives the error "invalid device function".
+
 ```bash
 make build                      # Release build in build/, CMAKE_CUDA_ARCHITECTURES=native
 ```

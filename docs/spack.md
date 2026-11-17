@@ -27,6 +27,8 @@ The two environments build this Git working tree (the `develop` section). Thus y
 
 The recipe needs CUDA 12.0 or newer and CMake 3.24 or newer.
 
+The driver must support the CUDA version of the toolkit. The "CUDA Version" in `nvidia-smi` must be equal to or higher than the `nvcc` version (example: CUDA 12.6 needs driver 560 or newer). An older driver gives the error "invalid device function".
+
 ## 3. Install Spack
 
 Spack 1.0 or newer is necessary. The recipe uses the package API v2.2.

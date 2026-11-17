@@ -15,7 +15,7 @@ GPUs below compute capability 7.0 are not supported (constitution 2.0.0). The nu
 
 ## Before you start
 
-1. Check the machine. Run `nvidia-smi` (driver and GPU list). Run `nvcc --version` (CUDA 12.0 or newer).
+1. Check the machine. Run `nvidia-smi` (driver and GPU list). Run `nvcc --version` (CUDA 12.0 or newer). The driver must support the CUDA version of the toolkit. The "CUDA Version" in `nvidia-smi` must be equal to or higher than the `nvcc` version (example: CUDA 12.6 needs driver 560 or newer). An older driver gives the error "invalid device function".
 2. Copy the results template: `cp docs/results-template.md docs/results.md`. Fill in section 1 (hardware).
 3. 🚧 (T001) Select the config file for the machine: `configs/dev-4070ti.cfg` or `configs/gh200.cfg`. Add `preset=agn` (ε = 0.01) or `preset=stellar` (ε = 0.0001) for the model type. Each run writes `config.used`. Copy it into `docs/results.md`.
 4. Use the **mean** orbital period from `h4nb_mkdisk` as the acceptance period. The TZ (section 1) asks for the characteristic mean period. This is the default until the project owner decides otherwise. If the decision changes, change this step. Write the period that you used in `docs/results.md`.
