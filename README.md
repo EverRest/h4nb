@@ -411,7 +411,7 @@ ctest --test-dir build -L cpu     # only the tests that need no GPU
 
 ## Authors
 
-- Pavlo Medynskyi, <pavlomedynskyy@gmail.com>
+- Pavlo Medynskyi, <medynskyypavlo@gmail.com>
 - Volodymyr Akhmetov, <akhmetovvs@gmail.com>
 
 ## License
